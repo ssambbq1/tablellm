@@ -15,7 +15,11 @@ try {
   });
   console.log('OpenAI model initialized successfully');
 } catch (error) {
-  console.error('Failed to initialize OpenAI model:', error.message);
+  if (error instanceof Error) {
+    console.error('Failed to initialize OpenAI model:', error.message);
+  } else {
+    console.error('Failed to initialize OpenAI model:', String(error));
+  }
 }
 
 function buildVisionMessage(dataUrl: string) {
