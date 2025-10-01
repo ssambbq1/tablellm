@@ -3,7 +3,7 @@ import { ChatOpenAI } from '@langchain/openai';
 import { HumanMessage } from '@langchain/core/messages';
 
 // Initialize the model with proper error handling
-let model: ChatOpenAI;
+let model: ChatOpenAI | null = null;
 try {
   if (!process.env.OPENAI_API_KEY) {
     throw new Error('OPENAI_API_KEY is not set in environment variables');
@@ -57,7 +57,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (!model) {
+    const m = model;
+    if (!m) {
       return NextResponse.json(
         { error: 'OpenAI model not initialized' },
         { status: 500 }
@@ -68,7 +69,7 @@ export async function POST(request: NextRequest) {
     const msg = buildVisionMessage(dataUrl);
     
     console.log('Calling OpenAI API...');
-    const response = await model.invoke([msg]);
+    const response = await m.invoke([msg]);
     console.log('OpenAI API response received');
 
     // LangChain returns an AIMessage; .content may be string or array depending on model
