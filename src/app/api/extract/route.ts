@@ -144,11 +144,21 @@ export async function POST(request: NextRequest) {
       });
       
       const response = await model.invoke([message]);
-      const raw = typeof response.content === 'string'
-        ? response.content
-        : Array.isArray(response.content)
-          ? response.content.map((c) => (typeof c === 'string' ? c : c?.text ?? '')).join('\n').trim()
-          : '';
+      const raw =
+        typeof response.content === 'string'
+          ? response.content
+          : Array.isArray(response.content)
+            ? response.content
+                .map((c) => {
+                  if (typeof c === 'string') return c;
+                  if (typeof c === 'object' && 'text' in c && typeof (c as any).text === 'string') {
+                    return (c as any).text as string;
+                  }
+                  return '';
+                })
+                .join('\n')
+                .trim()
+            : '';
       parsed = coerceToPlainJson(raw);
       console.log('[/api/extract] model JSON keys:', Object.keys(parsed || {}));
     } catch (apiErr: any) {
