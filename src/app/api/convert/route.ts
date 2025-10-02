@@ -73,11 +73,21 @@ export async function POST(request: NextRequest) {
     console.log('OpenAI API response received');
 
     // LangChain returns an AIMessage; .content may be string or array depending on model
-    const markdown = typeof response.content === 'string'
-      ? response.content
-      : Array.isArray(response.content)
-        ? response.content.map((c) => (typeof c === 'string' ? c : c?.text ?? '')).join('\n').trim()
-        : '';
+    const markdown =
+      typeof response.content === 'string'
+        ? response.content
+        : Array.isArray(response.content)
+          ? response.content
+              .map((c) => {
+                if (typeof c === 'string') return c;
+                if (typeof c === 'object' && 'text' in c && typeof c.text === 'string') {
+                  return c.text;
+                }
+                return '';
+              })
+              .join('\n')
+              .trim()
+          : '';
 
     console.log('Extracted markdown length:', markdown.length);
     return NextResponse.json({ markdown });
