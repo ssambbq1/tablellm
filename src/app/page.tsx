@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, SelectHTMLAttributes } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
@@ -12,16 +12,21 @@ interface ExtractedFields {
   [key: string]: string;
 }
 
+const CASE_OPTIONS = ['case1', 'case2', 'case3', 'case4'];
+
 export default function Home() {
   const [dataUrl, setDataUrl] = useState<string | null>(null);
   const [markdown, setMarkdown] = useState<string>('');
-  const [extractedFields, setExtractedFields] = useState<ExtractedFields | null>(null);
+  const [cases, setCases] = useState<{ [caseName: string]: ExtractedFields | null }>({});
+  const [selectedCase, setSelectedCase] = useState<string>(CASE_OPTIONS[0]);
   const [isConverting, setIsConverting] = useState(false);
   const [isExtracting, setIsExtracting] = useState(false);
   const [copySuccess, setCopySuccess] = useState(false);
   const [tableCopySuccess, setTableCopySuccess] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
+  const [caseOptions, setCaseOptions] = useState<string[]>(CASE_OPTIONS);
+  const [changedFields, setChangedFields] = useState<{ [caseName: string]: Set<string> }>({});
 
   const fileToDataUrl = useCallback((file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -108,23 +113,42 @@ export default function Home() {
 
   const handleExtract = async () => {
     if (!markdown.trim()) return;
-    
     setIsExtracting(true);
-    
     try {
       const response = await fetch('/api/extract', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ markdown })
       });
-      
       const json = await response.json();
-      
       if (!response.ok) {
         throw new Error(json.error || 'Extraction failed');
       }
-      
-      setExtractedFields(json.fields);
+      setCases(prev => {
+        const prevCase = prev[selectedCase] || {};
+        const newFields = json.fields || {};
+        const merged: ExtractedFields = { ...prevCase };
+        const changed = new Set<string>();
+        Object.keys(newFields).forEach(key => {
+          if (newFields[key] && newFields[key] !== prevCase[key]) {
+            merged[key] = newFields[key];
+            changed.add(key);
+          }
+        });
+        // 기존 값 유지 (새 데이터에 없는 값은 그대로)
+        return { ...prev, [selectedCase]: merged };
+      });
+      setChangedFields(prev => {
+        const changed = new Set<string>();
+        const prevCase = cases[selectedCase] || {};
+        const newFields = json.fields || {};
+        Object.keys(newFields).forEach(key => {
+          if (newFields[key] && newFields[key] !== prevCase[key]) {
+            changed.add(key);
+          }
+        });
+        return { ...prev, [selectedCase]: changed };
+      });
     } catch (err: any) {
       alert('Extraction error: ' + err.message);
     } finally {
@@ -133,7 +157,7 @@ export default function Home() {
   };
 
   const handleDownload = () => {
-    if (!extractedFields) return;
+    if (!cases[selectedCase]) return;
     
     const order = [
       'manufacturer', 'rated flow', 'normal flow', 'TDH', 'casing material',
@@ -141,7 +165,7 @@ export default function Home() {
       'max flow', 'min flow', 'shutoff TDH', 'pump model name'
     ];
     
-    const rows = [['Field', 'Value'], ...order.map(k => [k, extractedFields[k] || ''])];
+    const rows = [['Field', 'Value'], ...order.map(k => [k, cases[selectedCase]?.[k] || ''])];
     const csv = rows.map(r => r.map((cell) => {
       const s = String(cell ?? '');
       if (/[",\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
@@ -152,7 +176,7 @@ export default function Home() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'pump_data.csv';
+    a.download = `${selectedCase}_pump_data.csv`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -160,7 +184,7 @@ export default function Home() {
   };
 
   const handleCopyTable = async () => {
-    if (!extractedFields) return;
+    if (!cases[selectedCase]) return;
     
     const order = [
       'manufacturer', 'rated flow', 'normal flow', 'TDH', 'casing material',
@@ -169,7 +193,7 @@ export default function Home() {
     ];
     
     // Create tab-separated values for Excel compatibility
-    const rows = [['Field', 'Value'], ...order.map(k => [k, extractedFields[k] || ''])];
+    const rows = [['Field', 'Value'], ...order.map(k => [k, cases[selectedCase]?.[k] || ''])];
     const tsv = rows.map(row => row.join('\t')).join('\n');
     
     try {
@@ -207,7 +231,7 @@ export default function Home() {
 | Shaft Power (P2) (at Max.Eff.) | 2.51 kW      |
 | Rated NPSH                   | 1.2 m          |`;
     setMarkdown(sample);
-    setExtractedFields(null);
+    setCases({});
   };
 
   // Add paste event listener
@@ -216,6 +240,80 @@ export default function Home() {
     document.addEventListener('paste', handlePasteEvent);
     return () => document.removeEventListener('paste', handlePasteEvent);
   }, [handlePaste]);
+
+  const order = [
+    'manufacturer', 'rated flow', 'normal flow', 'TDH', 'casing material',
+    'shaft material', 'impeller material', 'shaft power', 'pump efficiency',
+    'max flow', 'min flow', 'shutoff TDH', 'pump model name'
+  ];
+
+  const handleAddCase = () => {
+    let nextNum = 1;
+    while (caseOptions.includes(`case${nextNum}`)) nextNum++;
+    setCaseOptions([...caseOptions, `case${nextNum}`]);
+  };
+
+  const handleRemoveCase = () => {
+    if (caseOptions.length <= 1) return;
+    const filtered = caseOptions.filter(c => c !== selectedCase);
+    setCaseOptions(filtered);
+    setSelectedCase(filtered[0]);
+    setCases(prev => {
+      const copy = { ...prev };
+      delete copy[selectedCase];
+      return copy;
+    });
+  };
+
+  const handleDownloadExcel = () => {
+    const order = [
+      'manufacturer', 'rated flow', 'normal flow', 'TDH', 'casing material',
+      'shaft material', 'impeller material', 'shaft power', 'pump efficiency',
+      'max flow', 'min flow', 'shutoff TDH', 'pump model name'
+    ];
+    const header = ['Field', ...caseOptions];
+    const rows = [header, ...order.map(field => [field, ...caseOptions.map(c => cases[c]?.[field] || '')])];
+    const csv = rows.map(row => row.map(cell => {
+      const s = String(cell ?? '');
+      if (/[",\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+      return s;
+    }).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'technical_evaluation_all_cases.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleCopyExcelTable = async () => {
+    const order = [
+      'manufacturer', 'rated flow', 'normal flow', 'TDH', 'casing material',
+      'shaft material', 'impeller material', 'shaft power', 'pump efficiency',
+      'max flow', 'min flow', 'shutoff TDH', 'pump model name'
+    ];
+    const header = ['Field', ...caseOptions];
+    const rows = [header, ...order.map(field => [field, ...caseOptions.map(c => cases[c]?.[field] || '')])];
+    const tsv = rows.map(row => row.join('\t')).join('\n');
+    try {
+      await navigator.clipboard.writeText(tsv);
+      setTableCopySuccess(true);
+      setTimeout(() => setTableCopySuccess(false), 1200);
+    } catch (err) {
+      // Fallback for older browsers
+      const textArea = document.createElement('textarea');
+      textArea.value = tsv;
+      document.body.appendChild(textArea);
+      textArea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textArea);
+      setTableCopySuccess(true);
+      setTimeout(() => setTableCopySuccess(false), 1200);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-background p-6">
@@ -226,6 +324,22 @@ export default function Home() {
             Paste (Ctrl/Cmd+V) a screenshot of a table or drop/upload below. The server will extract tables as Markdown.
           </p>
         </header>
+
+        <div className="mb-4 flex gap-4 items-center">
+          <label htmlFor="case-select" className="font-semibold">Select Case:</label>
+          <select
+            id="case-select"
+            value={selectedCase}
+            onChange={e => setSelectedCase(e.target.value)}
+            className="border rounded px-2 py-1"
+          >
+            {caseOptions.map(c => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
+          <Button variant="outline" onClick={handleAddCase}>Add Case</Button>
+          <Button variant="outline" onClick={handleRemoveCase} disabled={caseOptions.length <= 1}>Remove Case</Button>
+        </div>
 
         <Card>
           <CardContent className="p-6">
@@ -313,7 +427,7 @@ export default function Home() {
                 <Button
                   variant="outline"
                   onClick={handleDownload}
-                  disabled={!extractedFields}
+                  disabled={!cases[selectedCase]}
                   className="flex items-center gap-2"
                 >
                   <Download className="h-4 w-4" />
@@ -339,41 +453,54 @@ export default function Home() {
           </Card>
         </div>
 
-        {extractedFields && (
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center justify-between">
-                Technical Evaluation (정해진 평가항목에 매칭된 데이터)
-                <Button
-                  variant="outline"
-                  onClick={handleCopyTable}
-                  className="flex items-center gap-2"
-                >
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center justify-between">
+              Technical Evaluation (정해진 평가항목에 매칭된 데이터)
+              <div className="flex gap-2">
+                <Button variant="outline" onClick={handleCopyExcelTable}>
                   <Copy className="h-4 w-4" />
-                  {tableCopySuccess ? 'Copied!' : 'Copy for Excel'}
+                  {tableCopySuccess ? 'Copied!' : 'Copy Table for Excel'}
                 </Button>
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Field</TableHead>
-                    <TableHead>Value</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {Object.entries(extractedFields).map(([key, value]) => (
-                    <TableRow key={key}>
-                      <TableCell className="font-medium">{key}</TableCell>
-                      <TableCell>{value}</TableCell>
-                    </TableRow>
+                <Button variant="outline" onClick={handleDownloadExcel}>
+                  <Download className="h-4 w-4" />
+                  Download Excel
+                </Button>
+              </div>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Field</TableHead>
+                  {caseOptions.map(c => (
+                    <TableHead key={c}>{c}</TableHead>
                   ))}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-        )}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {order.map(field => (
+                  <TableRow key={field}>
+                    <TableCell className="font-medium">{field}</TableCell>
+                    {caseOptions.map(c => {
+                      const value = cases[c]?.[field] || '';
+                      const isChanged = changedFields[c]?.has(field);
+                      return (
+                        <TableCell
+                          key={c}
+                          style={isChanged ? { backgroundColor: '#fff8c6' } : {}}
+                        >
+                          {value}
+                        </TableCell>
+                      );
+                    })}
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
       </div>
     </div>
   );
