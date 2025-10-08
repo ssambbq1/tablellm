@@ -12,7 +12,7 @@ interface ExtractedFields {
   [key: string]: string;
 }
 
-const CASE_OPTIONS = ['case1', 'case2', 'case3', 'case4'];
+const CASE_OPTIONS = ['case1', 'case2', 'case3'];
 
 export default function Home() {
   const [dataUrl, setDataUrl] = useState<string | null>(null);
@@ -27,6 +27,8 @@ export default function Home() {
   const dropZoneRef = useRef<HTMLDivElement>(null);
   const [caseOptions, setCaseOptions] = useState<string[]>(CASE_OPTIONS);
   const [changedFields, setChangedFields] = useState<{ [caseName: string]: Set<string> }>({});
+  const [editingCell, setEditingCell] = useState<{ caseName: string; field: string } | null>(null);
+  const [editingValue, setEditingValue] = useState<string>('');
 
   const fileToDataUrl = useCallback((file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -214,25 +216,6 @@ export default function Home() {
     }
   };
 
-  const handleLoadSample = () => {
-    const sample = `| **Pump Data**                |                |
-|------------------------------|----------------|
-| Model                        | SM.V1          |
-| Type                         | Shredder Mixing Pump |
-| Stage                        | 1              |
-| Impeller Type                | Open           |
-| Impeller Diameter            | 127 mm         |
-| Inlet Diameter               | 2 1/2" - 75 mm |
-| Outlet Diameter              | 2" - 63 mm     |
-| Flow (Max.-Nominal-Min.)    | 50.7 - 30.9 - 10 m³/h |
-| Head (at QMax.-QNominal-QMin.) | 4.57 - 12.10 - 15.50 m |
-| Max. Pump Efficiency %       | 40.6           |
-| Shaft Power (P2) (Max.)     | 2.96 kW        |
-| Shaft Power (P2) (at Max.Eff.) | 2.51 kW      |
-| Rated NPSH                   | 1.2 m          |`;
-    setMarkdown(sample);
-    setCases({});
-  };
 
   // Add paste event listener
   useEffect(() => {
@@ -255,12 +238,21 @@ export default function Home() {
 
   const handleRemoveCase = () => {
     if (caseOptions.length <= 1) return;
-    const filtered = caseOptions.filter(c => c !== selectedCase);
+    // Find the case with the largest number
+    const maxCase = caseOptions.reduce((max, cur) => {
+      const num = parseInt(cur.replace(/[^\d]/g, ''));
+      const maxNum = parseInt(max.replace(/[^\d]/g, ''));
+      return num > maxNum ? cur : max;
+    }, caseOptions[0]);
+    const filtered = caseOptions.filter(c => c !== maxCase);
     setCaseOptions(filtered);
-    setSelectedCase(filtered[0]);
+    // If the removed case was selected, select the first remaining case
+    if (selectedCase === maxCase) {
+      setSelectedCase(filtered[0]);
+    }
     setCases(prev => {
       const copy = { ...prev };
-      delete copy[selectedCase];
+      delete copy[maxCase];
       return copy;
     });
   };
@@ -315,42 +307,56 @@ export default function Home() {
     }
   };
 
+  const handleCellClick = (caseName: string, field: string) => {
+    setEditingCell({ caseName, field });
+    setEditingValue(cases[caseName]?.[field] || '');
+  };
+
+  const handleCellChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setEditingValue(e.target.value);
+  };
+
+  const handleCellBlur = () => {
+    if (editingCell) {
+      setCases(prev => {
+        const updated = { ...prev };
+        const caseData = { ...(updated[editingCell.caseName] || {}) };
+        caseData[editingCell.field] = editingValue;
+        updated[editingCell.caseName] = caseData;
+        return updated;
+      });
+    }
+    setEditingCell(null);
+  };
+
+  const handleCellKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      handleCellBlur();
+    } else if (e.key === 'Escape') {
+      setEditingCell(null);
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-background p-6">
-      <div className="max-w-7xl mx-auto space-y-6">
+    <div className="min-h-screen bg-background p-2">
+      <div className="max-w-7xl mx-auto space-y-2">
         <header className="text-center space-y-2">
-          <h1 className="text-4xl font-bold">Image → Markdown (Tables)</h1>
+          <h1 className="text-4xl font-bold">Data Extractor from Captured Table</h1>
           <p className="text-muted-foreground">
             Paste (Ctrl/Cmd+V) a screenshot of a table or drop/upload below. The server will extract tables as Markdown.
           </p>
         </header>
 
-        <div className="mb-4 flex gap-4 items-center">
-          <label htmlFor="case-select" className="font-semibold">Select Case:</label>
-          <select
-            id="case-select"
-            value={selectedCase}
-            onChange={e => setSelectedCase(e.target.value)}
-            className="border rounded px-2 py-1"
-          >
-            {caseOptions.map(c => (
-              <option key={c} value={c}>{c}</option>
-            ))}
-          </select>
-          <Button variant="outline" onClick={handleAddCase}>Add Case</Button>
-          <Button variant="outline" onClick={handleRemoveCase} disabled={caseOptions.length <= 1}>Remove Case</Button>
-        </div>
-
         <Card>
-          <CardContent className="p-6">
+          <CardContent className="p-2">
             <div
               ref={dropZoneRef}
               onDragOver={handleDragOver}
               onDrop={handleDrop}
-              className="border-2 border-dashed border-primary bg-primary/5 rounded-lg p-6 text-center text-primary hover:bg-primary/10 transition-colors cursor-pointer"
+              className="border-2 border-dashed border-primary bg-primary/5 rounded-lg p-2 text-center text-primary hover:bg-primary/10 transition-colors cursor-pointer"
               onClick={() => fileInputRef.current?.click()}
             >
-              <Upload className="mx-auto h-12 w-12 mb-4" />
+              <Upload className="mx-auto h-8 w-12 mb-2" />
               <p className="font-semibold mb-2">
                 <strong>Paste</strong> an image here or <strong>drag & drop</strong> a file.
               </p>
@@ -376,7 +382,7 @@ export default function Home() {
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <FileText className="h-5 w-5" />
-                Preview
+                Image Table
               </CardTitle>
             </CardHeader>
             <CardContent>
@@ -402,7 +408,7 @@ export default function Home() {
                   {isConverting ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
                   ) : null}
-                  Convert
+                  Convert (Image to MD)
                 </Button>
                 <Button
                   variant="outline"
@@ -413,17 +419,7 @@ export default function Home() {
                   <Copy className="h-4 w-4" />
                   {copySuccess ? 'Copied!' : 'Copy'}
                 </Button>
-                <Button
-                  variant="outline"
-                  onClick={handleExtract}
-                  disabled={!markdown.trim() || isExtracting}
-                  className="flex items-center gap-2"
-                >
-                  {isExtracting ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : null}
-                  Extract Fields
-                </Button>
+
                 <Button
                   variant="outline"
                   onClick={handleDownload}
@@ -432,13 +428,6 @@ export default function Home() {
                 >
                   <Download className="h-4 w-4" />
                   Download CSV
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={handleLoadSample}
-                  className="flex items-center gap-2"
-                >
-                  Load Sample
                 </Button>
               </div>
             </CardHeader>
@@ -455,43 +444,82 @@ export default function Home() {
 
         <Card>
           <CardHeader>
-            <CardTitle className="flex items-center justify-between">
-              Technical Evaluation (정해진 평가항목에 매칭된 데이터)
-              <div className="flex gap-2">
-                <Button variant="outline" onClick={handleCopyExcelTable}>
-                  <Copy className="h-4 w-4" />
-                  {tableCopySuccess ? 'Copied!' : 'Copy Table for Excel'}
-                </Button>
-                <Button variant="outline" onClick={handleDownloadExcel}>
-                  <Download className="h-4 w-4" />
-                  Download Excel
-                </Button>
-              </div>
+            <CardTitle>
+              Technical Evaluation Sheet
             </CardTitle>
+            <div className="flex flex-wrap gap-2 mt-4">
+              <div className="flex gap-2 flex-wrap items-center">
+                <select
+                  id="case-select"
+                  value={selectedCase}
+                  onChange={e => setSelectedCase(e.target.value)}
+                  className="border rounded px-2 py-1"
+                >
+                  {caseOptions.map(c => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+                <Button variant="outline" onClick={handleAddCase}>Add Case</Button>
+                <Button variant="outline" onClick={handleRemoveCase} disabled={caseOptions.length <= 1}>Remove Case</Button>
+              </div>
+              <Button
+                onClick={handleExtract}
+                disabled={!markdown.trim() || isExtracting}
+                className="flex items-center gap-2"
+              >
+                {isExtracting ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : null}
+                Convert (MD to Case) 
+              </Button>
+              <Button variant="outline" onClick={handleCopyExcelTable}>
+                <Copy className="h-4 w-4" />
+                {tableCopySuccess ? 'Copied!' : 'Copy Table for Excel'}
+              </Button>
+              <Button variant="outline" onClick={handleDownloadExcel}>
+                <Download className="h-4 w-4" />
+                Download Excel
+              </Button>
+            </div>
           </CardHeader>
           <CardContent>
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Field</TableHead>
-                  {caseOptions.map(c => (
-                    <TableHead key={c}>{c}</TableHead>
+                  <TableHead className="text-left border-r">Field</TableHead>
+                  {caseOptions.map((c, idx) => (
+                    <TableHead key={c} className={`text-left${idx < caseOptions.length - 1 ? ' border-r' : ''}`}>{c}</TableHead>
                   ))}
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {order.map(field => (
                   <TableRow key={field}>
-                    <TableCell className="font-medium">{field}</TableCell>
-                    {caseOptions.map(c => {
+                    <TableCell className="font-medium text-left border-r">{field}</TableCell>
+                    {caseOptions.map((c, idx) => {
                       const value = cases[c]?.[field] || '';
                       const isChanged = changedFields[c]?.has(field);
+                      const isEditing = editingCell && editingCell.caseName === c && editingCell.field === field;
                       return (
                         <TableCell
                           key={c}
+                          className={`text-left cursor-pointer${idx < caseOptions.length - 1 ? ' border-r' : ''}`}
                           style={isChanged ? { backgroundColor: '#fff8c6' } : {}}
+                          onClick={() => handleCellClick(c, field)}
                         >
-                          {value}
+                          {isEditing ? (
+                            <input
+                              type="text"
+                              value={editingValue}
+                              autoFocus
+                              onChange={handleCellChange}
+                              onBlur={handleCellBlur}
+                              onKeyDown={handleCellKeyDown}
+                              className="w-full px-1 py-0.5 border rounded text-sm"
+                            />
+                          ) : (
+                            value
+                          )}
                         </TableCell>
                       );
                     })}
