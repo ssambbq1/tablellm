@@ -7,6 +7,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Upload, Copy, Download, Loader2, FileText } from 'lucide-react';
+import { useToast } from '@/components/ui/toast';
 
 interface ExtractedFields {
   [key: string]: string;
@@ -29,6 +30,7 @@ export default function Home() {
   const [changedFields, setChangedFields] = useState<{ [caseName: string]: Set<string> }>({});
   const [editingCell, setEditingCell] = useState<{ caseName: string; field: string } | null>(null);
   const [editingValue, setEditingValue] = useState<string>('');
+  const { addToast } = useToast();
 
   const fileToDataUrl = useCallback((file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -93,9 +95,34 @@ export default function Home() {
       }
       
       setMarkdown(json.markdown || 'No content extracted');
+      
+      // Show token usage information
+      if (json.usage) {
+        const { prompt_tokens, completion_tokens, total_tokens } = json.usage;
+        const estimatedCost = (total_tokens / 1000) * 0.00015; // GPT-4o-mini pricing approximately
+        const costKRW = Math.round(estimatedCost * 1400 * 1000) / 1000;
+        addToast({
+          title: '이미지 → 마크다운 변환 완료',
+          description: `토큰 사용량: 총 ${total_tokens}개 (프롬프트 ${prompt_tokens}개 + 응답 ${completion_tokens}개)\n예상 비용: ${costKRW}원`,
+          type: 'success',
+          duration: 10000
+        });
+      } else {
+        addToast({
+          title: '이미지 → 마크다운 변환 완료',
+          description: '변환이 완료되었습니다. (토큰 사용량 정보 없음)',
+          type: 'success',
+          duration: 5000
+        });
+      }
     } catch (err: any) {
       console.error('Conversion failed:', err);
       setMarkdown(`Error: ${err.message}`);
+      addToast({
+        title: '변환 실패',
+        description: err.message,
+        type: 'error'
+      });
     } finally {
       setIsConverting(false);
     }
@@ -151,8 +178,33 @@ export default function Home() {
         });
         return { ...prev, [selectedCase]: changed };
       });
+      
+      // Show token usage information
+      if (json.usage) {
+        const { prompt_tokens, completion_tokens, total_tokens } = json.usage;
+        const estimatedCost = (total_tokens / 1000) * 0.00015; // GPT-4o-mini pricing approximately
+        const costKRW = Math.round(estimatedCost * 1400 * 1000) / 1000;
+        addToast({
+          title: '마크다운 → 케이스 추출 완료',
+          description: `토큰 사용량: 총 ${total_tokens}개 (프롬프트 ${prompt_tokens}개 + 응답 ${completion_tokens}개)\n예상 비용: ${costKRW}원`,
+          type: 'success',
+          duration: 10000
+        });
+      } else {
+        addToast({
+          title: '마크다운 → 케이스 추출 완료',
+          description: '추출이 완료되었습니다. (토큰 사용량 정보 없음)',
+          type: 'success',
+          duration: 5000
+        });
+      }
     } catch (err: any) {
-      alert('Extraction error: ' + err.message);
+      console.error('Extraction failed:', err);
+      addToast({
+        title: '추출 실패',
+        description: err.message,
+        type: 'error'
+      });
     } finally {
       setIsExtracting(false);
     }
@@ -162,9 +214,9 @@ export default function Home() {
     if (!cases[selectedCase]) return;
     
     const order = [
-      'manufacturer', 'rated flow', 'normal flow', 'TDH', 'casing material',
-      'shaft material', 'impeller material', 'shaft power', 'pump efficiency',
-      'max flow', 'min flow', 'shutoff TDH', 'pump model name'
+      'manufacturer', 'pump model name', 'rated flow',
+      'max flow', 'min flow', 'normal flow', 'TDH', 'casing material',
+      'shaft material', 'impeller material', 'shaft power', 'pump efficiency', 'shutoff TDH'
     ];
     
     const rows = [['Field', 'Value'], ...order.map(k => [k, cases[selectedCase]?.[k] || ''])];
@@ -189,9 +241,9 @@ export default function Home() {
     if (!cases[selectedCase]) return;
     
     const order = [
-      'manufacturer', 'rated flow', 'normal flow', 'TDH', 'casing material',
-      'shaft material', 'impeller material', 'shaft power', 'pump efficiency',
-      'max flow', 'min flow', 'shutoff TDH', 'pump model name'
+      'manufacturer', 'pump model name', 'rated flow',
+      'max flow', 'min flow', 'normal flow', 'TDH', 'casing material',
+      'shaft material', 'impeller material', 'shaft power', 'pump efficiency', 'shutoff TDH'
     ];
     
     // Create tab-separated values for Excel compatibility
@@ -225,9 +277,9 @@ export default function Home() {
   }, [handlePaste]);
 
   const order = [
-    'manufacturer', 'rated flow', 'normal flow', 'TDH', 'casing material',
-    'shaft material', 'impeller material', 'shaft power', 'pump efficiency',
-    'max flow', 'min flow', 'shutoff TDH', 'pump model name'
+      'manufacturer', 'pump model name', 'rated flow',
+      'max flow', 'min flow', 'normal flow', 'TDH', 'casing material',
+      'shaft material', 'impeller material', 'shaft power', 'pump efficiency', 'shutoff TDH'
   ];
 
   const handleAddCase = () => {
@@ -454,6 +506,8 @@ export default function Home() {
                   value={selectedCase}
                   onChange={e => setSelectedCase(e.target.value)}
                   className="border rounded px-2 py-1"
+                  title="Select case"
+                  aria-label="Select case"
                 >
                   {caseOptions.map(c => (
                     <option key={c} value={c}>{c}</option>
@@ -516,6 +570,8 @@ export default function Home() {
                               onBlur={handleCellBlur}
                               onKeyDown={handleCellKeyDown}
                               className="w-full px-1 py-0.5 border rounded text-sm"
+                              title={`Edit ${field} for ${c}`}
+                              aria-label={`Edit ${field} for ${c}`}
                             />
                           ) : (
                             value
