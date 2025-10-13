@@ -93,58 +93,77 @@ function heuristicExtract(markdown: string) {
 }
 
 // Synonyms for semantic matching
-const synonyms: { [key: string]: { match: string[], exclude: string[] } } = {
+const synonyms: {
+  [key: string]: {
+    match: string[],
+    exclude: string[],
+    specialInstruction?: string
+  }
+} = {
   'manufacturer': {
     match: ['manufacturer', 'maker', 'brand', 'company', '제조사', '브랜드', '회사'],
-    exclude: []
+    exclude: [],
+    specialInstruction: '브랜드명과 제조사명이 동시에 있을 경우 제조사명을 우선하세요.'
   },
   'rated flow': {
     match: ['rated flow', 'q rated', 'q at rated', 'flow', '정격 유량'],
-    exclude: ['nominal flow', 'flow (nominal)']
+    exclude: ['nominal flow', 'flow (nominal)'],
+    specialInstruction: '정격 유량이 여러 값 중 하나라면 가장 대표값을 선택하세요.'
   },
   'normal flow': {
     match: ['normal flow', 'nominal flow', 'flow (nominal)', 'q nominal', '보통 유량', '정상 유량', '정격유량'],
-    exclude: ['rated flow']
+    exclude: ['rated flow'],
+    specialInstruction: '정상 유량과 보통 유량이 모두 있으면 정상 유량을 우선하세요.'
   },
   'TDH': {
     match: ['tdh', 'total dynamic head', 'head', 'head (at qmax.-qnominal-qmin.)', 'shutoff head', '전양정', '양정'],
-    exclude: []
+    exclude: [],
+    specialInstruction: 'shutoff head는 shutoff TDH로 분리하세요.'
   },
   'casing material': {
     match: ['casing material', 'pump casing material', 'casing', '케이싱 재질', '케이싱'],
-    exclude: []
+    exclude: [],
+    specialInstruction: 'match되는 정확히 같은 의미의 재질 정보가 없는 경우 값을 입력하지 마세요.'
   },
   'shaft material': {
     match: ['shaft material', 'shaft material (pump)', 'shaft', '샤프트 재질', '축 재질'],
-    exclude: []
+    exclude: [],
+    specialInstruction: 'match되는 정확히 같은 의미의 재질 정보가 없는 경우 값을 입력하지 마세요.'
   },
   'impeller material': {
     match: ['impeller material', 'impeller', '임펠러 재질'],
-    exclude: []
+    exclude: [],
+    specialInstruction: 'match되는 정확히 같은 의미의 재질 정보가 없는 경우 값을 입력하지 마세요.'
   },
   'shaft power': {
     match: ['shaft power', 'shaft power (p2)', 'p2', 'power (shaft)', '축 동력'],
-    exclude: []
+    exclude: [],
+    specialInstruction: ''
   },
   'pump efficiency': {
     match: ['pump efficiency', 'max. pump efficiency', 'efficiency', '펌프 효율', '효율'],
-    exclude: []
+    exclude: [],
+    specialInstruction: ''
   },
   'max flow': {
     match: ['max flow', 'q max', 'maximum flow', '최대 유량'],
-    exclude: []
+    exclude: [],
+    specialInstruction: ''
   },
   'min flow': {
     match: ['min flow', 'q min', 'minimum flow', '최소 유량'],
-    exclude: []
+    exclude: [],
+    specialInstruction: ''
   },
   'shutoff TDH': {
     match: ['shutoff tdh', 'shut-off head', 'shut off head', 'head at shutoff', '차단양정'],
-    exclude: ['head at QMax', 'head at QMin', 'TDH']
+    exclude: ['head at QMax', 'head at QMin', 'TDH'],
+    specialInstruction: 'shutoff head만 shutoff TDH에 넣으세요.'
   },
   'pump model name': {
     match: ['pump model name', 'model', 'pump model', 'model name', '모델', '모델명'],
-    exclude: []
+    exclude: [],
+    specialInstruction: '모델명이 여러 개일 경우 가장 긴 값을 사용하세요.'
   }
 };
 
@@ -182,11 +201,21 @@ export async function POST(request: NextRequest) {
 
     // Build extra instructions for match/exclude fields
     const fieldInstructions = buildFieldInstructions(synonyms);
+    const matchExcludePrompt = Object.entries(synonyms)
+      .map(([key, value]) => {
+        const matchStr = value.match.length > 0 ? `다음 단어(들)가 포함된 값을 우선적으로 '${key}' 필드에 넣으세요: ${JSON.stringify(value.match)}.` : '';
+        const excludeStr = value.exclude.length > 0 ? `단, 다음 단어(들)가 포함되었거나, 같은 뜻의 값은 '${key}' 필드에서 반드시 제외하세요: ${JSON.stringify(value.exclude)}.` : '';
+        const specialStr = value.specialInstruction && value.specialInstruction.trim() ? `특별 규칙: ${value.specialInstruction}` : '';
+        return [matchStr, excludeStr, specialStr].filter(Boolean).join(' ');
+      })
+      .filter(Boolean)
+      .join('\n');
     const instruction = [
       'You will receive Markdown that contains one or more tables describing a pump and motor.',
       'Map the content to the following fixed fields. Use semantic matching and reasonable synonyms.',
       'Units should be preserved if present. If a field is missing, use an empty string.',
-      fieldInstructions, // <-- Insert match/exclude instructions here
+      matchExcludePrompt,
+      fieldInstructions, // 기존 영어 안내도 포함
       'Return STRICT JSON with exactly these keys and string values only:',
       `${JSON.stringify(REQUIRED_FIELDS)}`,
       'Do not include any extra keys or commentary. JSON only.',
