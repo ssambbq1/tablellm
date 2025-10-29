@@ -17,6 +17,7 @@ const CASE_OPTIONS = ['case1', 'case2', 'case3'];
 
 export default function Home() {
   const [dataUrl, setDataUrl] = useState<string | null>(null);
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [markdown, setMarkdown] = useState<string>('');
   const [cases, setCases] = useState<{ [caseName: string]: ExtractedFields | null }>({});
   const [selectedCase, setSelectedCase] = useState<string>(CASE_OPTIONS[0]);
@@ -45,12 +46,18 @@ export default function Home() {
     const fakeFile = new File([blob], 'pasted.png', { type: blob.type || 'image/png' });
     const url = await fileToDataUrl(fakeFile);
     setDataUrl(url);
+    setUploadedFile(null);
   }, [fileToDataUrl]);
 
   const handleFileChange = useCallback(async (file: File) => {
-    if (file && file.type.startsWith('image/')) {
+    if (!file) return;
+    if (file.type.startsWith('image/')) {
       const url = await fileToDataUrl(file);
       setDataUrl(url);
+      setUploadedFile(null);
+    } else if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+      setUploadedFile(file);
+      setDataUrl(null);
     }
   }, [fileToDataUrl]);
 
@@ -76,12 +83,44 @@ export default function Home() {
   }, [handleFileChange]);
 
   const handleConvert = async () => {
-    if (!dataUrl) return;
+    if (!dataUrl && !uploadedFile) return;
     
     setIsConverting(true);
-    setMarkdown('Converting image...');
+    setMarkdown('Converting...');
     
     try {
+      if (uploadedFile) {
+        const form = new FormData();
+        form.append('file', uploadedFile);
+        const response = await fetch('/api/convert', {
+          method: 'POST',
+          body: form,
+        });
+        const json = await response.json();
+        if (!response.ok) {
+          throw new Error(json.error || json.details || 'Server error');
+        }
+        setMarkdown(json.markdown || 'No content extracted');
+        if (json.usage) {
+          const { prompt_tokens, completion_tokens, total_tokens } = json.usage;
+          const estimatedCost = (total_tokens / 1000) * 0.00015;
+          const costKRW = Math.round(estimatedCost * 1400 * 1000) / 1000;
+          addToast({
+            title: '변환 완료',
+            description: `토큰 사용량 총 ${total_tokens} (프롬프트 ${prompt_tokens} + 응답 ${completion_tokens})\\n예상 비용: 약 ${costKRW}원`,
+            type: 'success',
+            duration: 10000
+          });
+        } else {
+          addToast({
+            title: '변환 완료',
+            description: '변환이 완료되었습니다 (토큰 사용량 정보 없음)',
+            type: 'success',
+            duration: 5000
+          });
+        }
+        return;
+      }
       const response = await fetch('/api/convert', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -393,7 +432,7 @@ export default function Home() {
     <div className="min-h-screen bg-background p-2">
       <div className="max-w-7xl mx-auto space-y-2">
         <header className="text-center space-y-2">
-          <h1 className="text-4xl font-bold">Data Extractor from Captured Table</h1>
+          <h1 className="text-4xl font-bold">Data Extractor from Table</h1>
           <p className="text-muted-foreground">
             Paste (Ctrl/Cmd+V) a screenshot of a table or drop/upload below. The server will extract tables as Markdown.
           </p>
@@ -410,15 +449,15 @@ export default function Home() {
             >
               <Upload className="mx-auto h-8 w-12 mb-2" />
               <p className="font-semibold mb-2">
-                <strong>Paste</strong> an image here or <strong>drag & drop</strong> a file.
+                <strong>Paste</strong> an image here or <strong>drag & drop</strong> an image/PDF.
               </p>
               <p className="text-sm text-muted-foreground mb-4">
-                Upload image file
+                Upload image or PDF file
               </p>
               <Input
                 ref={fileInputRef}
                 type="file"
-                accept="image/*"
+                accept="image/*,application/pdf"
                 className="hidden"
                 onChange={(e) => {
                   const file = e.target.files?.[0];
@@ -438,13 +477,17 @@ export default function Home() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              {dataUrl && (
+              {dataUrl ? (
                 <img
                   src={dataUrl}
                   alt="preview"
                   className="w-full h-auto rounded-lg border"
                 />
-              )}
+              ) : uploadedFile ? (
+                <div className="text-sm text-muted-foreground border rounded p-2">
+                  PDF selected: {uploadedFile.name}
+                </div>
+              ) : null}
             </CardContent>
           </Card>
 
@@ -454,13 +497,13 @@ export default function Home() {
               <div className="flex gap-2 flex-wrap">
                 <Button
                   onClick={handleConvert}
-                  disabled={!dataUrl || isConverting}
+                  disabled={(!dataUrl && !uploadedFile) || isConverting}
                   className="flex items-center gap-2"
                 >
                   {isConverting ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
                   ) : null}
-                  Convert (Image to MD)
+                  Convert (Image/PDF to MD)
                 </Button>
                 <Button
                   variant="outline"
