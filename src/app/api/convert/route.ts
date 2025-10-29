@@ -45,10 +45,17 @@ export async function POST(request: NextRequest) {
     const sp = url.searchParams;
     const envMaxPages = Number(process.env.PDF_MAX_PAGES) || 20;
     const envScale = Number(process.env.PDF_RENDER_SCALE) || 2;
+    const envConcurrency = Number(process.env.PDF_CONCURRENCY) || 2;
     const maxPagesParam = Number(sp.get('maxPages'));
     const scaleParam = Number(sp.get('scale'));
+    const startParam = Number(sp.get('start'));
+    const endParam = Number(sp.get('end'));
+    const concurrencyParam = Number(sp.get('concurrency'));
     const maxPagesCfg = Number.isFinite(maxPagesParam) && maxPagesParam > 0 ? Math.min(maxPagesParam, 50) : envMaxPages;
     const scaleCfg = Number.isFinite(scaleParam) && scaleParam >= 1 && scaleParam <= 4 ? scaleParam : envScale;
+    const startPageCfg = Number.isFinite(startParam) && startParam > 0 ? Math.floor(startParam) : 1;
+    const endPageCfgRaw = Number.isFinite(endParam) && endParam > 0 ? Math.floor(endParam) : undefined;
+    const concurrencyCfg = Number.isFinite(concurrencyParam) && concurrencyParam >= 1 && concurrencyParam <= 5 ? Math.floor(concurrencyParam) : envConcurrency;
 
     let mode: 'image' | 'pdf' | null = null;
     let imageDataUrl: string | null = null;
@@ -155,7 +162,7 @@ export async function POST(request: NextRequest) {
       console.log('Rendering PDF pages to images...');
 
       // Helper to render PDF pages to image data URLs
-      async function pdfToImageDataUrls(data: Uint8Array): Promise<string[]> {
+      async function pdfToImageDataUrls(data: Uint8Array): Promise<{ page: number; dataUrl: string }[]> {
         const { createCanvas } = await import('@napi-rs/canvas');
         // Ensure pdfjs fake worker can be resolved in Node/Turbopack
         await import('pdfjs-dist/legacy/build/pdf.worker.mjs');
@@ -172,11 +179,15 @@ export async function POST(request: NextRequest) {
           useWorkerFetch: true,
         });
         const pdf = await loadingTask.promise;
-        const dataUrls: string[] = [];
+        const dataUrls: { page: number; dataUrl: string }[] = [];
 
         // Limit pages to avoid excessive API calls for very large PDFs
-        const maxPages = Math.min(pdf.numPages, maxPagesCfg);
-        for (let i = 1; i <= maxPages; i++) {
+        const totalPages = pdf.numPages;
+        const lastByMax = Math.min(totalPages, startPageCfg + maxPagesCfg - 1);
+        const lastByEnd = endPageCfgRaw ? Math.min(endPageCfgRaw, totalPages) : totalPages;
+        const lastPage = Math.min(lastByMax, lastByEnd);
+        const firstPage = Math.min(Math.max(1, startPageCfg), lastPage);
+        for (let i = firstPage; i <= lastPage; i++) {
           const page = await pdf.getPage(i);
           const viewport = page.getViewport({ scale: scaleCfg });
 
@@ -208,7 +219,7 @@ export async function POST(request: NextRequest) {
 
           await (page as any).render(renderContext).promise;
           const dataUrl = canvas.toDataURL('image/png');
-          dataUrls.push(dataUrl);
+          dataUrls.push({ page: i, dataUrl });
         }
         return dataUrls;
       }
@@ -228,10 +239,28 @@ export async function POST(request: NextRequest) {
         '- If no tables are found, return "No tables detected in the image."',
       ].join('\n');
 
-      const parts: string[] = [];
-      for (let idx = 0; idx < pageImages.length; idx++) {
-        const imageUrl = pageImages[idx];
-        console.log(`Calling OpenAI for PDF page ${idx + 1}/${pageImages.length}`);
+      // Concurrency-limited OpenAI calls per page
+      async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+        const results: R[] = new Array(items.length);
+        let nextIndex = 0;
+        let active = 0;
+        return new Promise((resolve, reject) => {
+          const launchNext = () => {
+            while (active < limit && nextIndex < items.length) {
+              const cur = nextIndex++;
+              active++;
+              fn(items[cur], cur)
+                .then((res) => { results[cur] = res; active--; launchNext(); })
+                .catch(reject);
+            }
+            if (nextIndex >= items.length && active === 0) resolve(results);
+          };
+          launchNext();
+        });
+      }
+
+      const pageResults = await mapLimit(pageImages, concurrencyCfg, async ({ page, dataUrl }, idx) => {
+        console.log(`Calling OpenAI for PDF page ${page} (${idx + 1}/${pageImages.length})`);
         const response = await openaiClient.chat.completions.create({
           model: 'gpt-4o-mini',
           messages: [
@@ -239,22 +268,25 @@ export async function POST(request: NextRequest) {
               role: 'user',
               content: [
                 { type: 'text', text: basePrompt },
-                { type: 'image_url', image_url: { url: imageUrl } },
+                { type: 'image_url', image_url: { url: dataUrl } },
               ],
             },
           ],
           temperature: 0,
         });
-
-        const pageMarkdown = response.choices[0]?.message?.content?.trim() || '';
-        if (pageMarkdown && !/No tables detected/i.test(pageMarkdown)) {
-          parts.push(pageMarkdown);
-        }
-
         usageInfo.prompt_tokens += response.usage?.prompt_tokens || 0;
         usageInfo.completion_tokens += response.usage?.completion_tokens || 0;
         usageInfo.total_tokens += response.usage?.total_tokens || 0;
-      }
+
+        const content = response.choices[0]?.message?.content?.trim() || '';
+        return { page, content };
+      });
+
+      // Combine with per-page headers and filter empty/no-table responses
+      const parts: string[] = pageResults
+        .filter(r => r.content && !/No tables detected/i.test(r.content))
+        .sort((a, b) => a.page - b.page)
+        .map(r => `### Page ${r.page}\n\n${r.content}`);
 
       markdown = parts.length > 0 ? parts.join('\n\n') : 'No tables detected in the document.';
     } else {
