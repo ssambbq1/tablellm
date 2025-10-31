@@ -189,6 +189,10 @@ export async function POST(request: NextRequest) {
         return Array.from(set).sort((a, b) => a - b);
       }
 
+      // Build absolute URLs for assets so Node's fetch can resolve them in Vercel
+      const reqUrl = new URL(request.url);
+      const origin = `${reqUrl.protocol}//${reqUrl.host}`;
+
       async function pdfToImageDataUrls(data: Uint8Array): Promise<{ page: number; dataUrl: string }[]> {
         const { createCanvas } = await import('@napi-rs/canvas');
         // Ensure pdfjs fake worker can be resolved in Node/Turbopack
@@ -199,8 +203,8 @@ export async function POST(request: NextRequest) {
           // Prefer system fonts in Node; fallback to served assets
           useSystemFonts: true,
           // Serve these from Next public/ if available
-          standardFontDataUrl: '/pdfjs/standard_fonts/',
-          cMapUrl: '/pdfjs/cmaps/',
+          standardFontDataUrl: `${origin}/pdfjs/standard_fonts/`,
+          cMapUrl: `${origin}/pdfjs/cmaps/`,
           cMapPacked: true,
           // Allow fetch usage in worker/fake-worker
           useWorkerFetch: true,
