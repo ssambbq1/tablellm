@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Upload, Copy, Download, Loader2, FileText } from 'lucide-react';
+import { Upload, Copy, Download, Loader2, FileText, X } from 'lucide-react';
 import { useToast } from '@/components/ui/toast';
 
 interface ExtractedFields {
@@ -18,6 +18,12 @@ const CASE_OPTIONS = ['case1', 'case2', 'case3'];
 export default function Home() {
   const [dataUrl, setDataUrl] = useState<string | null>(null);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [imageDataUrls, setImageDataUrls] = useState<string[]>([]);
+  const [pdfTotalPages, setPdfTotalPages] = useState<number | null>(null);
+  const [includePages, setIncludePages] = useState<string>('');
+  const [excludePages, setExcludePages] = useState<string>('');
+  const [pdfPageImages, setPdfPageImages] = useState<{ page: number; url: string }[]>([]);
+  const [isRenderingPdf, setIsRenderingPdf] = useState(false);
   const [markdown, setMarkdown] = useState<string>('');
   const [cases, setCases] = useState<{ [caseName: string]: ExtractedFields | null }>({});
   const [selectedCase, setSelectedCase] = useState<string>(CASE_OPTIONS[0]);
@@ -47,7 +53,18 @@ export default function Home() {
     const url = await fileToDataUrl(fakeFile);
     setDataUrl(url);
     setUploadedFile(null);
+    setImageDataUrls(prev => [...prev, url]);
   }, [fileToDataUrl]);
+
+  const handleRemoveImage = useCallback((index: number) => {
+    setImageDataUrls(prev => {
+      const next = prev.filter((_, i) => i !== index);
+      if (next.length === 0) {
+        setDataUrl(null);
+      }
+      return next;
+    });
+  }, []);
 
   const handleFileChange = useCallback(async (file: File) => {
     if (!file) return;
@@ -55,11 +72,153 @@ export default function Home() {
       const url = await fileToDataUrl(file);
       setDataUrl(url);
       setUploadedFile(null);
+      setImageDataUrls(prev => [...prev, url]);
+      setPdfTotalPages(null);
+      setIncludePages('');
+      setExcludePages('');
+      setPdfPageImages([]);
     } else if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
       setUploadedFile(file);
       setDataUrl(null);
+      setImageDataUrls([]);
+      setPdfPageImages([]);
+      setIncludePages('');
+      setExcludePages('');
+      // Count total pages of the selected PDF
+      try {
+        const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
+        await import('pdfjs-dist/legacy/build/pdf.worker.mjs');
+        if ((pdfjsLib as any)?.GlobalWorkerOptions) {
+          (pdfjsLib as any).GlobalWorkerOptions.workerSrc = 'pdfjs-dist/legacy/build/pdf.worker.mjs';
+        }
+        const data = new Uint8Array(await file.arrayBuffer());
+        const loadingTask = (pdfjsLib as any).getDocument({
+          data,
+          useWorkerFetch: true,
+          useSystemFonts: true,
+          standardFontDataUrl: '/pdfjs/standard_fonts/',
+          cMapUrl: '/pdfjs/cmaps/',
+          cMapPacked: true,
+        });
+        const pdf = await loadingTask.promise;
+        setPdfTotalPages(pdf.numPages || null);
+        // Auto-render all pages preview by default
+        const total = pdf.numPages;
+        const results: { page: number; url: string }[] = [];
+        for (let p = 1; p <= total; p++) {
+          const page = await pdf.getPage(p);
+          const viewport = page.getViewport({ scale: 1.0 });
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.ceil(viewport.width);
+          canvas.height = Math.ceil(viewport.height);
+          const ctx = canvas.getContext('2d');
+          if (!ctx) continue;
+          const renderTask: any = (page as any).render({ canvasContext: ctx, viewport });
+          await renderTask.promise;
+          const url = canvas.toDataURL('image/png');
+          results.push({ page: p, url });
+        }
+        setPdfPageImages(results);
+      } catch (e: any) {
+        console.error('Failed to read PDF page count:', e);
+        setPdfTotalPages(null);
+        addToast({
+          title: 'PDF 페이지 읽기 실패',
+          description: e?.message || '파일을 확인해주세요.',
+          type: 'error'
+        });
+      }
     }
   }, [fileToDataUrl]);
+
+  // Parse page spec: e.g., "1,3,5-7"
+  const parsePageSpec = useCallback((spec: string, total: number): number[] => {
+    if (!spec) return [];
+    const set = new Set<number>();
+    spec.split(',').map(s => s.trim()).filter(Boolean).forEach(p => {
+      if (/^\d+$/.test(p)) {
+        const n = parseInt(p, 10);
+        if (n >= 1 && n <= total) set.add(n);
+      } else {
+        const m = p.match(/^(\d+)\s*-\s*(\d+)$/);
+        if (m) {
+          let a = parseInt(m[1], 10);
+          let b = parseInt(m[2], 10);
+          if (a > b) [a, b] = [b, a];
+          a = Math.max(1, a);
+          b = Math.min(total, b);
+          for (let i = a; i <= b; i++) set.add(i);
+        }
+      }
+    });
+    return Array.from(set).sort((a, b) => a - b);
+  }, []);
+
+  const handleRenderPdfPreview = useCallback(async () => {
+    if (!uploadedFile) return;
+    setIsRenderingPdf(true);
+    setPdfPageImages([]);
+    try {
+      const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
+      await import('pdfjs-dist/legacy/build/pdf.worker.mjs');
+      if ((pdfjsLib as any)?.GlobalWorkerOptions) {
+        (pdfjsLib as any).GlobalWorkerOptions.workerSrc = 'pdfjs-dist/legacy/build/pdf.worker.mjs';
+      }
+      const data = new Uint8Array(await uploadedFile.arrayBuffer());
+      const loadingTask = (pdfjsLib as any).getDocument({
+        data,
+        useWorkerFetch: true,
+        useSystemFonts: true,
+        standardFontDataUrl: '/pdfjs/standard_fonts/',
+        cMapUrl: '/pdfjs/cmaps/',
+        cMapPacked: true,
+      });
+      const pdf = await loadingTask.promise;
+      const total = pdf.numPages;
+      const include = parsePageSpec(includePages, total);
+      const exclude = new Set(parsePageSpec(excludePages, total));
+      let selected: number[];
+      if (include.length > 0) {
+        selected = include.filter(n => !exclude.has(n));
+      } else {
+        selected = Array.from({ length: total }, (_, i) => i + 1).filter(n => !exclude.has(n));
+      }
+      const MAX_PREVIEW = 10;
+      const previewPages = selected.slice(0, MAX_PREVIEW);
+      const results: { page: number; url: string }[] = [];
+      for (const p of previewPages) {
+        const page = await pdf.getPage(p);
+        const viewport = page.getViewport({ scale: 1.2 });
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.ceil(viewport.width);
+        canvas.height = Math.ceil(viewport.height);
+        const ctx = canvas.getContext('2d');
+        if (!ctx) continue;
+        const renderTask: any = (page as any).render({ canvasContext: ctx, viewport });
+        await renderTask.promise;
+        const url = canvas.toDataURL('image/png');
+        results.push({ page: p, url });
+      }
+      setPdfPageImages(results);
+      if (selected.length > MAX_PREVIEW) {
+        addToast({
+          title: '미리보기 제한',
+          description: `선택된 ${selected.length}페이지 중 처음 ${MAX_PREVIEW}페이지만 미리보기로 표시합니다.`,
+          type: 'info',
+          duration: 6000,
+        });
+      }
+    } catch (e: any) {
+      console.error('PDF preview render failed:', e);
+      addToast({
+        title: '미리보기 실패',
+        description: e?.message || '페이지 렌더링 중 오류가 발생했습니다.',
+        type: 'error',
+      });
+    } finally {
+      setIsRenderingPdf(false);
+    }
+  }, [uploadedFile, includePages, excludePages, parsePageSpec, addToast]);
 
   const handlePaste = useCallback(async (e: ClipboardEvent) => {
     if (!e.clipboardData) return;
@@ -83,16 +242,65 @@ export default function Home() {
   }, [handleFileChange]);
 
   const handleConvert = async () => {
-    if (!dataUrl && !uploadedFile) return;
+    if (imageDataUrls.length === 0 && !dataUrl && !uploadedFile) return;
     
     setIsConverting(true);
     setMarkdown('Converting...');
     
     try {
+      // If multiple pasted images exist, convert them sequentially and aggregate
+      if (imageDataUrls.length > 0 && !uploadedFile) {
+        let total_tokens = 0, prompt_tokens = 0, completion_tokens = 0;
+        const parts: string[] = [];
+        for (let i = 0; i < imageDataUrls.length; i++) {
+          const u = imageDataUrls[i];
+          const resp = await fetch('/api/convert', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ dataUrl: u })
+          });
+          const j = await resp.json();
+          if (!resp.ok) throw new Error(j.error || j.details || `이미지 ${i + 1} 처리 실패`);
+          const content = (j.markdown || '').trim();
+          if (content && !/No tables detected/i.test(content)) {
+            parts.push(`### Image ${i + 1}\n\n${content}`);
+          }
+          if (j.usage) {
+            prompt_tokens += j.usage.prompt_tokens || 0;
+            completion_tokens += j.usage.completion_tokens || 0;
+            total_tokens += j.usage.total_tokens || 0;
+          }
+        }
+        const combined = parts.length ? parts.join('\n\n') : 'No tables detected in the images.';
+        setMarkdown(combined);
+        if (total_tokens > 0) {
+          const estimatedCost = (total_tokens / 1000) * 0.00015;
+          const costKRW = Math.round(estimatedCost * 1400 * 1000) / 1000;
+          addToast({
+            title: '변환 완료',
+            description: `토큰 사용량: ${total_tokens} (프롬프트 ${prompt_tokens} + 응답 ${completion_tokens})\n예상 비용: 약 ${costKRW}원`,
+            type: 'success',
+            duration: 10000
+          });
+        } else {
+          addToast({
+            title: '변환 완료',
+            description: '여러 이미지의 변환이 완료되었습니다.',
+            type: 'success',
+            duration: 5000
+          });
+        }
+        return;
+      }
       if (uploadedFile) {
         const form = new FormData();
         form.append('file', uploadedFile);
-        const response = await fetch('/api/convert', {
+        const params = new URLSearchParams();
+        if (includePages.trim()) params.set('pages', includePages.trim());
+        if (excludePages.trim()) params.set('exclude', excludePages.trim());
+        const qs = params.toString();
+        const url = qs ? `/api/convert?${qs}` : '/api/convert';
+        const response = await fetch(url, {
           method: 'POST',
           body: form,
         });
@@ -477,15 +685,72 @@ export default function Home() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              {dataUrl ? (
+              {imageDataUrls.length > 0 ? (
+                <div className="grid grid-cols-1 gap-3 max-h-[480px] overflow-auto">
+                  {imageDataUrls.map((u, idx) => (
+                    <div key={idx} className="space-y-1">
+                      <div className="text-xs text-muted-foreground">Image {idx + 1}</div>
+                      <div className="relative">
+                        <img src={u} alt={`pasted-${idx+1}`} className="w-full h-auto rounded border" />
+                        <button
+                          type="button"
+                          aria-label={`이미지 ${idx + 1} 삭제`}
+                          onClick={(e) => { e.stopPropagation(); handleRemoveImage(idx); }}
+                          className="absolute top-1 right-1 inline-flex items-center justify-center rounded-full bg-black/60 hover:bg-black/80 text-white shadow p-1"
+                          title="이미지 삭제"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : dataUrl ? (
                 <img
                   src={dataUrl}
                   alt="preview"
                   className="w-full h-auto rounded-lg border"
                 />
               ) : uploadedFile ? (
-                <div className="text-sm text-muted-foreground border rounded p-2">
-                  PDF selected: {uploadedFile.name}
+                <div className="text-sm text-muted-foreground border rounded p-2 space-y-2">
+                  <div>PDF selected: {uploadedFile.name}{pdfTotalPages ? ` · 총 페이지: ${pdfTotalPages}` : ''}</div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    <Input
+                      placeholder="포함할 페이지 (예: 1-5,7,9)"
+                      value={includePages}
+                      onChange={(e) => setIncludePages(e.target.value)}
+                    />
+                    <Input
+                      placeholder="제외할 페이지 (예: 2,6)"
+                      value={excludePages}
+                      onChange={(e) => setExcludePages(e.target.value)}
+                    />
+                  </div>
+                  <div className="flex gap-2 items-center">
+                    <Button size="sm" onClick={handleRenderPdfPreview} disabled={isRenderingPdf}>
+                      {isRenderingPdf ? (
+                        <><Loader2 className="h-4 w-4 animate-spin" /> 렌더링...</>
+                      ) : (
+                        '미리보기 생성'
+                      )}
+                    </Button>
+                    {pdfPageImages.length > 0 ? (
+                      <span className="text-xs">미리보기 {pdfPageImages.length}개</span>
+                    ) : null}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    비워두면 전체 페이지를 변환합니다. 범위는 쉼표로 구분하고 대시는 범위를 의미합니다.
+                  </p>
+                  {pdfPageImages.length > 0 ? (
+                    <div className="grid grid-cols-1 gap-3 max-h-[480px] overflow-auto">
+                      {pdfPageImages.map(img => (
+                        <div key={img.page} className="space-y-1">
+                          <div className="text-xs text-muted-foreground">Page {img.page}</div>
+                          <img src={img.url} alt={`Page ${img.page}`} className="w-full h-auto rounded border" />
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
             </CardContent>
@@ -497,7 +762,7 @@ export default function Home() {
               <div className="flex gap-2 flex-wrap">
                 <Button
                   onClick={handleConvert}
-                  disabled={(!dataUrl && !uploadedFile) || isConverting}
+                  disabled={(imageDataUrls.length === 0 && !dataUrl && !uploadedFile) || isConverting}
                   className="flex items-center gap-2"
                 >
                   {isConverting ? (

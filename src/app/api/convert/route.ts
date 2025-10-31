@@ -51,7 +51,10 @@ export async function POST(request: NextRequest) {
     const startParam = Number(sp.get('start'));
     const endParam = Number(sp.get('end'));
     const concurrencyParam = Number(sp.get('concurrency'));
-    const maxPagesCfg = Number.isFinite(maxPagesParam) && maxPagesParam > 0 ? Math.min(maxPagesParam, 50) : envMaxPages;
+    const pagesSpec = (sp.get('pages') || '').trim();
+    const excludeSpec = (sp.get('exclude') || '').trim();
+    // Default to all pages if no explicit max provided
+    const maxPagesCfg = Number.isFinite(maxPagesParam) && maxPagesParam > 0 ? Math.min(maxPagesParam, 50) : Number.POSITIVE_INFINITY;
     const scaleCfg = Number.isFinite(scaleParam) && scaleParam >= 1 && scaleParam <= 4 ? scaleParam : envScale;
     const startPageCfg = Number.isFinite(startParam) && startParam > 0 ? Math.floor(startParam) : 1;
     const endPageCfgRaw = Number.isFinite(endParam) && endParam > 0 ? Math.floor(endParam) : undefined;
@@ -162,6 +165,30 @@ export async function POST(request: NextRequest) {
       console.log('Rendering PDF pages to images...');
 
       // Helper to render PDF pages to image data URLs
+      // parse page specification like "1,3,5-7"
+      function parsePageSpec(spec: string, total: number): number[] {
+        if (!spec) return [];
+        const set = new Set<number>();
+        const parts = spec.split(',').map(s => s.trim()).filter(Boolean);
+        for (const p of parts) {
+          if (/^\d+$/.test(p)) {
+            const n = parseInt(p, 10);
+            if (n >= 1 && n <= total) set.add(n);
+          } else {
+            const m = p.match(/^(\d+)\s*-\s*(\d+)$/);
+            if (m) {
+              let a = parseInt(m[1], 10);
+              let b = parseInt(m[2], 10);
+              if (a > b) [a, b] = [b, a];
+              a = Math.max(1, a);
+              b = Math.min(total, b);
+              for (let i = a; i <= b; i++) set.add(i);
+            }
+          }
+        }
+        return Array.from(set).sort((a, b) => a - b);
+      }
+
       async function pdfToImageDataUrls(data: Uint8Array): Promise<{ page: number; dataUrl: string }[]> {
         const { createCanvas } = await import('@napi-rs/canvas');
         // Ensure pdfjs fake worker can be resolved in Node/Turbopack
@@ -181,13 +208,28 @@ export async function POST(request: NextRequest) {
         const pdf = await loadingTask.promise;
         const dataUrls: { page: number; dataUrl: string }[] = [];
 
-        // Limit pages to avoid excessive API calls for very large PDFs
         const totalPages = pdf.numPages;
-        const lastByMax = Math.min(totalPages, startPageCfg + maxPagesCfg - 1);
+        const lastByMax = Math.min(totalPages, startPageCfg + (isFinite(maxPagesCfg) ? maxPagesCfg : Number.MAX_SAFE_INTEGER) - 1);
         const lastByEnd = endPageCfgRaw ? Math.min(endPageCfgRaw, totalPages) : totalPages;
         const lastPage = Math.min(lastByMax, lastByEnd);
         const firstPage = Math.min(Math.max(1, startPageCfg), lastPage);
-        for (let i = firstPage; i <= lastPage; i++) {
+
+        let selectedPages: number[];
+        const includeList = parsePageSpec(pagesSpec, totalPages);
+        const excludeList = new Set(parsePageSpec(excludeSpec, totalPages));
+        if (includeList.length > 0) {
+          selectedPages = includeList.filter(p => p >= firstPage && p <= lastPage && !excludeList.has(p));
+        } else {
+          const tmp: number[] = [];
+          for (let i = firstPage; i <= lastPage; i++) if (!excludeList.has(i)) tmp.push(i);
+          selectedPages = tmp;
+        }
+
+        if (selectedPages.length === 0) {
+          throw new Error('No pages selected after applying include/exclude.');
+        }
+
+        for (const i of selectedPages) {
           const page = await pdf.getPage(i);
           const viewport = page.getViewport({ scale: scaleCfg });
 
