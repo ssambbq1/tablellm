@@ -48,6 +48,14 @@ export default function Home() {
   // Track user intent about fields (deleted or renamed)
   const [deletedFields, setDeletedFields] = useState<string[]>([]);
   const [fieldAliases, setFieldAliases] = useState<Record<string, string>>({});
+  // Column sizing (Excel-like)
+  const DEFAULT_FIELD_COL_WIDTH = 220;
+  const DEFAULT_CASE_COL_WIDTH = 140;
+  const MIN_COL_WIDTH = 80;
+  const MAX_COL_WIDTH = 600;
+  const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
+  const [resizingCol, setResizingCol] = useState<string | null>(null);
+  const resizeInfoRef = useRef<{ startX: number; startWidth: number; colKey: string } | null>(null);
   const { addToast } = useToast();
 
   const fileToDataUrl = useCallback((file: File): Promise<string> => {
@@ -674,6 +682,46 @@ export default function Home() {
     }
   };
 
+  // Initialize column widths and keep in sync with caseOptions
+  useEffect(() => {
+    setColumnWidths(prev => {
+      const next: Record<string, number> = { ...prev };
+      if (next['__FIELD__'] == null) next['__FIELD__'] = DEFAULT_FIELD_COL_WIDTH;
+      caseOptions.forEach(c => { if (next[c] == null) next[c] = DEFAULT_CASE_COL_WIDTH; });
+      // Remove widths for cases that no longer exist
+      Object.keys(next).forEach(k => {
+        if (k !== '__FIELD__' && !caseOptions.includes(k)) delete next[k];
+      });
+      return next;
+    });
+  }, [caseOptions]);
+
+  const beginResize = (e: React.MouseEvent, key: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const startWidth = columnWidths[key] ?? (key === '__FIELD__' ? DEFAULT_FIELD_COL_WIDTH : DEFAULT_CASE_COL_WIDTH);
+    resizeInfoRef.current = { startX, startWidth, colKey: key };
+    setResizingCol(key);
+    const onMove = (ev: MouseEvent) => {
+      const info = resizeInfoRef.current;
+      if (!info) return;
+      const dx = ev.clientX - info.startX;
+      let w = info.startWidth + dx;
+      if (w < MIN_COL_WIDTH) w = MIN_COL_WIDTH;
+      if (w > MAX_COL_WIDTH) w = MAX_COL_WIDTH;
+      setColumnWidths(prev => ({ ...prev, [info.colKey]: w }));
+    };
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      setResizingCol(null);
+      resizeInfoRef.current = null;
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+
   const handleFieldNameClick = (index: number) => {
     setEditingFieldIndex(index);
     setEditingFieldName(fields[index] || '');
@@ -1006,19 +1054,46 @@ export default function Home() {
             </div>
           </CardHeader>
           <CardContent>
-            <Table>
+            <Table className="table-fixed w-full border border-gray-300 rounded-md overflow-hidden">
               <TableHeader>
-                <TableRow>
-                  <TableHead className="text-left border-r">Field</TableHead>
+                <TableRow className="bg-gray-100">
+                  <TableHead
+                    className="text-left border-r border-gray-300 relative select-none text-sm"
+                    style={{ width: columnWidths['__FIELD__'], minWidth: columnWidths['__FIELD__'] }}
+                  >
+                    <div className="pr-2">Field</div>
+                    <div
+                      role="separator"
+                      aria-label="Resize Field column"
+                      onMouseDown={(e) => beginResize(e, '__FIELD__')}
+                      className={`absolute top-0 right-0 h-full w-1 cursor-col-resize ${resizingCol === '__FIELD__' ? 'bg-primary/50' : 'hover:bg-primary/40'}`}
+                    />
+                  </TableHead>
                   {caseOptions.map((c, idx) => (
-                    <TableHead key={c} className={`text-left${idx < caseOptions.length - 1 ? ' border-r' : ''}`}>{c}</TableHead>
+                    <TableHead
+                      key={c}
+                      className={`text-left border-gray-300 relative select-none text-sm${idx < caseOptions.length - 1 ? ' border-r' : ''}`}
+                      style={{ width: columnWidths[c], minWidth: columnWidths[c] }}
+                      title={c}
+                    >
+                      <div className="pr-2 truncate" title={c}>{c}</div>
+                      <div
+                        role="separator"
+                        aria-label={`Resize ${c} column`}
+                        onMouseDown={(e) => beginResize(e, c)}
+                        className={`absolute top-0 right-0 h-full w-1 cursor-col-resize ${resizingCol === c ? 'bg-primary/50' : 'hover:bg-primary/40'}`}
+                      />
+                    </TableHead>
                   ))}
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {fields.map((field, rowIdx) => (
-                  <TableRow key={`${field}-${rowIdx}`}>
-                    <TableCell className="font-medium text-left border-r">
+                  <TableRow key={`${field}-${rowIdx}`} className="odd:bg-white even:bg-gray-50 hover:bg-blue-50">
+                    <TableCell
+                      className="font-medium text-left border-r border-gray-200 px-2 py-1 text-sm"
+                      style={{ width: columnWidths['__FIELD__'], minWidth: columnWidths['__FIELD__'] }}
+                    >
                       <div className="flex items-center justify-between gap-2">
                         {editingFieldIndex === rowIdx ? (
                           <input
@@ -1033,7 +1108,7 @@ export default function Home() {
                             aria-label={`Edit field name`}
                           />
                         ) : (
-                          <span className="cursor-pointer" onClick={() => handleFieldNameClick(rowIdx)}>{field}</span>
+                          <span className="cursor-pointer truncate" title={field} onClick={() => handleFieldNameClick(rowIdx)}>{field}</span>
                         )}
                         <Button
                           variant="ghost"
@@ -1053,8 +1128,8 @@ export default function Home() {
                       return (
                         <TableCell
                           key={c}
-                          className={`text-left cursor-pointer${idx < caseOptions.length - 1 ? ' border-r' : ''}`}
-                          style={isChanged ? { backgroundColor: '#fff8c6' } : {}}
+                          className={`text-left cursor-pointer ${idx < caseOptions.length - 1 ? ' border-r' : ''} border-gray-200 px-2 py-1 text-sm`}
+                          style={{ ...(isChanged ? { backgroundColor: '#fff8c6' } : {}), width: columnWidths[c], minWidth: columnWidths[c] }}
                           onClick={() => { if (!isEditing) handleCellClick(c, field); }}
                         >
                           {isEditing ? (
@@ -1070,7 +1145,7 @@ export default function Home() {
                               aria-label={`Edit ${field} for ${c}`}
                             />
                           ) : (
-                            value
+                            <span className="block truncate" title={value}>{value}</span>
                           )}
                         </TableCell>
                       );
