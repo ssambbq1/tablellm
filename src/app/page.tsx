@@ -37,6 +37,17 @@ export default function Home() {
   const [changedFields, setChangedFields] = useState<{ [caseName: string]: Set<string> }>({});
   const [editingCell, setEditingCell] = useState<{ caseName: string; field: string } | null>(null);
   const [editingValue, setEditingValue] = useState<string>('');
+  const DEFAULT_FIELDS = [
+    'manufacturer', 'pump model name', 'rated flow',
+    'max flow', 'min flow', 'normal flow', 'TDH', 'casing material',
+    'shaft material', 'impeller material', 'shaft power', 'pump efficiency', 'shutoff TDH'
+  ];
+  const [fields, setFields] = useState<string[]>(DEFAULT_FIELDS);
+  const [editingFieldIndex, setEditingFieldIndex] = useState<number | null>(null);
+  const [editingFieldName, setEditingFieldName] = useState<string>('');
+  // Track user intent about fields (deleted or renamed)
+  const [deletedFields, setDeletedFields] = useState<string[]>([]);
+  const [fieldAliases, setFieldAliases] = useState<Record<string, string>>({});
   const { addToast } = useToast();
 
   const fileToDataUrl = useCallback((file: File): Promise<string> => {
@@ -400,6 +411,16 @@ export default function Home() {
       if (!response.ok) {
         throw new Error(json.error || 'Extraction failed');
       }
+      // Normalize extracted field keys: apply rename aliases and skip deleted
+      const deletedSet = new Set(deletedFields);
+      const rawFields: Record<string, string> = json.fields || {};
+      const mappedFields: Record<string, string> = {};
+      Object.keys(rawFields).forEach((key) => {
+        const mappedKey = fieldAliases[key] || key;
+        if (!deletedSet.has(mappedKey)) {
+          mappedFields[mappedKey] = rawFields[key];
+        }
+      });
       setCases(prev => {
         const prevCase = prev[selectedCase] || {};
         const newFields = json.fields || {};
@@ -414,6 +435,12 @@ export default function Home() {
         // 기존 값 유지 (새 데이터에 없는 값은 그대로)
         return { ...prev, [selectedCase]: merged };
       });
+      // Ensure new extracted fields appear as rows
+      setFields(prev => {
+        const nf = Object.keys(json.fields || {});
+        const add = nf.filter(k => !prev.includes(k));
+        return add.length ? [...prev, ...add] : prev;
+      });
       setChangedFields(prev => {
         const changed = new Set<string>();
         const prevCase = cases[selectedCase] || {};
@@ -424,6 +451,43 @@ export default function Home() {
           }
         });
         return { ...prev, [selectedCase]: changed };
+      });
+
+      // Reconcile with user intent: remove deleted fields and map aliases
+      const aliasKeys = Object.keys(fieldAliases);
+      // 1) Update cases: move aliased keys -> target names, drop deleted
+      setCases(prev => {
+        const updated = { ...prev } as { [caseName: string]: ExtractedFields | null };
+        const caseData = { ...(updated[selectedCase] || {}) } as ExtractedFields;
+        // Move alias keys
+        aliasKeys.forEach(oldKey => {
+          const newKey = fieldAliases[oldKey];
+          if (oldKey in caseData) {
+            // If newKey already exists, prefer existing value unless oldKey has a non-empty value
+            const oldVal = caseData[oldKey];
+            if (!caseData[newKey] && oldVal) {
+              caseData[newKey] = oldVal;
+            }
+            delete caseData[oldKey];
+          }
+        });
+        // Drop deleted
+        deletedFields.forEach(df => {
+          if (df in caseData) delete caseData[df];
+        });
+        updated[selectedCase] = caseData;
+        return updated;
+      });
+
+      // 2) Update fields list: drop deleted and remove old alias keys if target exists
+      setFields(prev => {
+        const targetSet = new Set(Object.values(fieldAliases));
+        const oldAliasSet = new Set(Object.keys(fieldAliases));
+        const deletedSet2 = new Set(deletedFields);
+        const filtered = prev.filter(f => !deletedSet2.has(f));
+        // Remove old alias key if target also present
+        const finalList = filtered.filter(f => !(oldAliasSet.has(f) && targetSet.has(fieldAliases[f] || '')));
+        return finalList;
       });
       
       // Show token usage information
@@ -460,13 +524,7 @@ export default function Home() {
   const handleDownload = () => {
     if (!cases[selectedCase]) return;
     
-    const order = [
-      'manufacturer', 'pump model name', 'rated flow',
-      'max flow', 'min flow', 'normal flow', 'TDH', 'casing material',
-      'shaft material', 'impeller material', 'shaft power', 'pump efficiency', 'shutoff TDH'
-    ];
-    
-    const rows = [['Field', 'Value'], ...order.map(k => [k, cases[selectedCase]?.[k] || ''])];
+    const rows = [['Field', 'Value'], ...fields.map(k => [k, cases[selectedCase]?.[k] || ''])];
     const csv = rows.map(r => r.map((cell) => {
       const s = String(cell ?? '');
       if (/[",\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
@@ -487,14 +545,8 @@ export default function Home() {
   const handleCopyTable = async () => {
     if (!cases[selectedCase]) return;
     
-    const order = [
-      'manufacturer', 'pump model name', 'rated flow',
-      'max flow', 'min flow', 'normal flow', 'TDH', 'casing material',
-      'shaft material', 'impeller material', 'shaft power', 'pump efficiency', 'shutoff TDH'
-    ];
-    
     // Create tab-separated values for Excel compatibility
-    const rows = [['Field', 'Value'], ...order.map(k => [k, cases[selectedCase]?.[k] || ''])];
+    const rows = [['Field', 'Value'], ...fields.map(k => [k, cases[selectedCase]?.[k] || ''])];
     const tsv = rows.map(row => row.join('\t')).join('\n');
     
     try {
@@ -523,11 +575,7 @@ export default function Home() {
     return () => document.removeEventListener('paste', handlePasteEvent);
   }, [handlePaste]);
 
-  const order = [
-      'manufacturer', 'pump model name', 'rated flow',
-      'max flow', 'min flow', 'normal flow', 'TDH', 'casing material',
-      'shaft material', 'impeller material', 'shaft power', 'pump efficiency', 'shutoff TDH'
-  ];
+  // Fields are managed dynamically via `fields` state
 
   const handleAddCase = () => {
     let nextNum = 1;
@@ -557,13 +605,8 @@ export default function Home() {
   };
 
   const handleDownloadExcel = () => {
-    const order = [
-      'manufacturer', 'rated flow', 'normal flow', 'TDH', 'casing material',
-      'shaft material', 'impeller material', 'shaft power', 'pump efficiency',
-      'max flow', 'min flow', 'shutoff TDH', 'pump model name'
-    ];
     const header = ['Field', ...caseOptions];
-    const rows = [header, ...order.map(field => [field, ...caseOptions.map(c => cases[c]?.[field] || '')])];
+    const rows = [header, ...fields.map(field => [field, ...caseOptions.map(c => cases[c]?.[field] || '')])];
     const csv = rows.map(row => row.map(cell => {
       const s = String(cell ?? '');
       if (/[",\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
@@ -581,13 +624,8 @@ export default function Home() {
   };
 
   const handleCopyExcelTable = async () => {
-    const order = [
-      'manufacturer', 'rated flow', 'normal flow', 'TDH', 'casing material',
-      'shaft material', 'impeller material', 'shaft power', 'pump efficiency',
-      'max flow', 'min flow', 'shutoff TDH', 'pump model name'
-    ];
     const header = ['Field', ...caseOptions];
-    const rows = [header, ...order.map(field => [field, ...caseOptions.map(c => cases[c]?.[field] || '')])];
+    const rows = [header, ...fields.map(field => [field, ...caseOptions.map(c => cases[c]?.[field] || '')])];
     const tsv = rows.map(row => row.join('\t')).join('\n');
     try {
       await navigator.clipboard.writeText(tsv);
@@ -634,6 +672,128 @@ export default function Home() {
     } else if (e.key === 'Escape') {
       setEditingCell(null);
     }
+  };
+
+  const handleFieldNameClick = (index: number) => {
+    setEditingFieldIndex(index);
+    setEditingFieldName(fields[index] || '');
+  };
+
+  const handleFieldNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setEditingFieldName(e.target.value);
+  };
+
+  const commitFieldRename = (index: number) => {
+    const prevName = fields[index];
+    const nextName = editingFieldName.trim();
+    if (!nextName) {
+      setEditingFieldIndex(null);
+      setEditingFieldName('');
+      return;
+    }
+    if (nextName !== prevName && fields.includes(nextName)) {
+      addToast({
+        title: '중복 항목 이름',
+        description: '이미 존재하는 항목 이름입니다.',
+        type: 'error'
+      });
+      return;
+    }
+    setFields(prev => {
+      const copy = [...prev];
+      copy[index] = nextName;
+      return copy;
+    });
+    // Record alias so future extractions map old -> new and un-delete target
+    if (nextName !== prevName) {
+      setFieldAliases(prev => ({ ...prev, [prevName]: nextName }));
+      setDeletedFields(prev => prev.filter(f => f !== nextName));
+    }
+    if (nextName !== prevName) {
+      setCases(prev => {
+        const updated: { [caseName: string]: ExtractedFields | null } = { ...prev };
+        Object.keys(updated).forEach(cn => {
+          const data = { ...(updated[cn] || {}) };
+          if (prevName in data) {
+            const val = data[prevName];
+            delete data[prevName];
+            data[nextName] = val;
+            updated[cn] = data;
+          } else if (data[prevName] !== undefined) {
+            delete data[prevName];
+            updated[cn] = data;
+          }
+        });
+        return updated;
+      });
+      setChangedFields(prev => {
+        const copy: { [caseName: string]: Set<string> } = {} as any;
+        Object.keys(prev).forEach(cn => {
+          const s = new Set(prev[cn] || []);
+          if (s.has(prevName)) {
+            s.delete(prevName);
+            s.add(nextName);
+          }
+          copy[cn] = s;
+        });
+        return copy;
+      });
+    }
+    setEditingFieldIndex(null);
+    setEditingFieldName('');
+  };
+
+  const handleFieldNameBlur = () => {
+    if (editingFieldIndex !== null) commitFieldRename(editingFieldIndex);
+  };
+
+  const handleFieldNameKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && editingFieldIndex !== null) {
+      e.preventDefault();
+      commitFieldRename(editingFieldIndex);
+    } else if (e.key === 'Escape') {
+      setEditingFieldIndex(null);
+      setEditingFieldName('');
+    }
+  };
+
+  const handleAddField = () => {
+    let base = 'new field';
+    let name = base;
+    let i = 1;
+    while (fields.includes(name)) {
+      name = `${base} ${i++}`;
+    }
+    setFields(prev => [...prev, name]);
+    // If user previously deleted a field with the same name, un-delete it
+    setDeletedFields(prev => prev.filter(f => f !== name));
+  };
+
+  const handleRemoveField = (index: number) => {
+    const field = fields[index];
+    setFields(prev => prev.filter((_, i) => i !== index));
+    // Remember deletion so extraction won’t re-add it
+    setDeletedFields(prev => (prev.includes(field) ? prev : [...prev, field]));
+    setCases(prev => {
+      const updated: { [caseName: string]: ExtractedFields | null } = { ...prev };
+      Object.keys(updated).forEach(cn => {
+        const data = { ...(updated[cn] || {}) };
+        if (field in data) {
+          delete data[field];
+          updated[cn] = data;
+        }
+      });
+      return updated;
+    });
+    setChangedFields(prev => {
+      const copy: { [caseName: string]: Set<string> } = {} as any;
+      Object.keys(prev).forEach(cn => {
+        const s = new Set(prev[cn] || []);
+        if (s.has(field)) s.delete(field);
+        copy[cn] = s;
+      });
+      return copy;
+    });
   };
 
   return (
@@ -823,6 +983,7 @@ export default function Home() {
                 </select>
                 <Button variant="outline" onClick={handleAddCase}>Add Case</Button>
                 <Button variant="outline" onClick={handleRemoveCase} disabled={caseOptions.length <= 1}>Remove Case</Button>
+                <Button variant="outline" onClick={handleAddField}>Add Field</Button>
               </div>
               <Button
                 onClick={handleExtract}
@@ -855,9 +1016,36 @@ export default function Home() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {order.map(field => (
-                  <TableRow key={field}>
-                    <TableCell className="font-medium text-left border-r">{field}</TableCell>
+                {fields.map((field, rowIdx) => (
+                  <TableRow key={`${field}-${rowIdx}`}>
+                    <TableCell className="font-medium text-left border-r">
+                      <div className="flex items-center justify-between gap-2">
+                        {editingFieldIndex === rowIdx ? (
+                          <input
+                            type="text"
+                            value={editingFieldName}
+                            autoFocus
+                            onChange={handleFieldNameChange}
+                            onBlur={handleFieldNameBlur}
+                            onKeyDown={handleFieldNameKeyDown}
+                            className="w-full px-1 py-0.5 border rounded text-sm"
+                            title={`Edit field name`}
+                            aria-label={`Edit field name`}
+                          />
+                        ) : (
+                          <span className="cursor-pointer" onClick={() => handleFieldNameClick(rowIdx)}>{field}</span>
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => handleRemoveField(rowIdx)}
+                          title="Remove field"
+                          aria-label="Remove field"
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </TableCell>
                     {caseOptions.map((c, idx) => {
                       const value = cases[c]?.[field] || '';
                       const isChanged = changedFields[c]?.has(field);
@@ -867,7 +1055,7 @@ export default function Home() {
                           key={c}
                           className={`text-left cursor-pointer${idx < caseOptions.length - 1 ? ' border-r' : ''}`}
                           style={isChanged ? { backgroundColor: '#fff8c6' } : {}}
-                          onClick={() => handleCellClick(c, field)}
+                          onClick={() => { if (!isEditing) handleCellClick(c, field); }}
                         >
                           {isEditing ? (
                             <input

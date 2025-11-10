@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --turbopack",
+    "dev": "node scripts/ensure-next-dev-dirs.cjs && next dev --turbopack",
     "build": "npm run copy:pdfjs-assets && next build --turbopack",
     "start": "next start",
     "copy:pdfjs-assets": "node scripts/copy-pdfjs-assets.cjs",
