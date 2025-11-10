@@ -405,7 +405,7 @@ export default function Home() {
       const response = await fetch('/api/extract', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ markdown })
+        body: JSON.stringify({ markdown, fields, aliases: fieldAliases })
       });
       const json = await response.json();
       if (!response.ok) {
