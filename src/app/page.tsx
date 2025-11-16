@@ -33,6 +33,7 @@ export default function Home() {
   const [tableCopySuccess, setTableCopySuccess] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
+  const gridContainerRef = useRef<HTMLDivElement>(null);
   const [caseOptions, setCaseOptions] = useState<string[]>(CASE_OPTIONS);
   const [changedFields, setChangedFields] = useState<{ [caseName: string]: Set<string> }>({});
   const [editingCell, setEditingCell] = useState<{ caseName: string; field: string } | null>(null);
@@ -56,6 +57,9 @@ export default function Home() {
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
   const [resizingCol, setResizingCol] = useState<string | null>(null);
   const resizeInfoRef = useRef<{ startX: number; startWidth: number; colKey: string } | null>(null);
+  const [gridSelection, setGridSelection] = useState<{ startRow: number; startCol: number; endRow: number; endCol: number } | null>(null);
+  const [isSelectingCells, setIsSelectingCells] = useState(false);
+  const hasDraggedSelectionRef = useRef(false);
   const { addToast } = useToast();
 
   const fileToDataUrl = useCallback((file: File): Promise<string> => {
@@ -238,17 +242,6 @@ export default function Home() {
       setIsRenderingPdf(false);
     }
   }, [uploadedFile, includePages, excludePages, parsePageSpec, addToast]);
-
-  const handlePaste = useCallback(async (e: ClipboardEvent) => {
-    if (!e.clipboardData) return;
-    const items = e.clipboardData.items;
-    for (const item of items) {
-      if (item.type && item.type.startsWith('image/')) {
-        const blob = item.getAsFile();
-        if (blob) await handleImageBlob(blob);
-      }
-    }
-  }, [handleImageBlob]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -576,13 +569,6 @@ export default function Home() {
   };
 
 
-  // Add paste event listener
-  useEffect(() => {
-    const handlePasteEvent = (e: ClipboardEvent) => handlePaste(e);
-    document.addEventListener('paste', handlePasteEvent);
-    return () => document.removeEventListener('paste', handlePasteEvent);
-  }, [handlePaste]);
-
   // Fields are managed dynamically via `fields` state
 
   const handleAddCase = () => {
@@ -649,6 +635,174 @@ export default function Home() {
       document.body.removeChild(textArea);
       setTableCopySuccess(true);
       setTimeout(() => setTableCopySuccess(false), 1200);
+    }
+  };
+
+  const copySelectionToClipboard = useCallback(async () => {
+    if (!gridSelection) return;
+    const sel = normalizeSelection(gridSelection);
+    const rows: string[][] = [];
+    for (let r = sel.startRow; r <= sel.endRow; r++) {
+      const row: string[] = [];
+      for (let c = sel.startCol; c <= sel.endCol; c++) {
+        if (c === 0) {
+          row.push(fields[r] ?? '');
+        } else {
+          const caseIdx = c - 1;
+          const caseName = caseOptions[caseIdx];
+          row.push(cases[caseName]?.[fields[r]] || '');
+        }
+      }
+      rows.push(row);
+    }
+    const tsv = rows.map(r => r.join('\t')).join('\n');
+    try {
+      await navigator.clipboard.writeText(tsv);
+      setTableCopySuccess(true);
+      setTimeout(() => setTableCopySuccess(false), 1200);
+    } catch (err) {
+      const textArea = document.createElement('textarea');
+      textArea.value = tsv;
+      document.body.appendChild(textArea);
+      textArea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textArea);
+      setTableCopySuccess(true);
+      setTimeout(() => setTableCopySuccess(false), 1200);
+    }
+  }, [gridSelection, fields, caseOptions, cases]);
+
+  const pasteRangeToGrid = useCallback((text: string) => {
+    if (!text.trim()) return;
+    const lines = text.replace(/\r/g, '').split('\n').filter(Boolean);
+    const matrix = lines.map(line => line.split('\t'));
+    const sel = normalizeSelection(gridSelection ?? { startRow: 0, startCol: 0, endRow: 0, endCol: 0 });
+    let nextFields = [...fields];
+    const aliasUpdates: Record<string, string> = {};
+    const undelete = new Set<string>();
+
+    const ensureFieldName = (idx: number) => {
+      if (!nextFields[idx]) {
+        let candidate = `field ${idx + 1}`;
+        let suffix = 1;
+        while (nextFields.includes(candidate)) {
+          candidate = `field ${idx + 1} (${suffix++})`;
+        }
+        nextFields[idx] = candidate;
+      }
+      return nextFields[idx];
+    };
+
+    const requiredRows = sel.startRow + matrix.length;
+    for (let i = nextFields.length; i < requiredRows; i++) {
+      ensureFieldName(i);
+    }
+
+    const nextCases: { [caseName: string]: ExtractedFields | null } = {};
+    const nextChanged: { [caseName: string]: Set<string> } = {};
+    caseOptions.forEach(c => {
+      nextCases[c] = { ...(cases[c] || {}) };
+      nextChanged[c] = new Set(changedFields[c] || []);
+    });
+
+    matrix.forEach((rowVals, rIdx) => {
+      const rowIndex = sel.startRow + rIdx;
+      const currentFieldName = ensureFieldName(rowIndex);
+      rowVals.forEach((rawVal, cIdx) => {
+        const colIndex = sel.startCol + cIdx;
+        const value = rawVal ?? '';
+        if (colIndex === 0) {
+          const newName = value || currentFieldName;
+          if (newName !== currentFieldName) {
+            const prevName = nextFields[rowIndex];
+            nextFields[rowIndex] = newName;
+            aliasUpdates[prevName] = newName;
+            undelete.add(newName);
+            caseOptions.forEach(cn => {
+              const data = nextCases[cn] || {};
+              if (prevName in data) {
+                const val = data[prevName];
+                delete data[prevName];
+                data[newName] = val;
+                nextCases[cn] = data;
+              }
+              const changedSet = nextChanged[cn];
+              if (changedSet.has(prevName)) {
+                changedSet.delete(prevName);
+                changedSet.add(newName);
+              }
+            });
+          }
+        } else {
+          const caseIdx = colIndex - 1;
+          if (caseIdx < caseOptions.length) {
+            const caseName = caseOptions[caseIdx];
+            const data = nextCases[caseName] || {};
+            data[nextFields[rowIndex]] = value;
+            nextCases[caseName] = data;
+            const changedSet = nextChanged[caseName];
+            changedSet.add(nextFields[rowIndex]);
+          }
+        }
+      });
+    });
+
+    setFields(nextFields);
+    setCases(nextCases);
+    setChangedFields(() => {
+      const result: { [caseName: string]: Set<string> } = {};
+      Object.keys(nextChanged).forEach(cn => {
+        result[cn] = new Set(nextChanged[cn]);
+      });
+      return result;
+    });
+    if (Object.keys(aliasUpdates).length > 0) {
+      setFieldAliases(prev => ({ ...prev, ...aliasUpdates }));
+    }
+    if (undelete.size > 0) {
+      setDeletedFields(prev => prev.filter(f => !undelete.has(f)));
+    }
+  }, [gridSelection, fields, caseOptions, cases, changedFields]);
+
+  const handlePaste = useCallback(async (e: ClipboardEvent) => {
+    if (!e.clipboardData) return;
+    const target = e.target as HTMLElement | null;
+    const isEditableTarget = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
+    const isInsideGrid = target && gridContainerRef.current && gridContainerRef.current.contains(target);
+
+    const items = e.clipboardData.items;
+    let handledImage = false;
+    for (const item of items) {
+      if (item.type && item.type.startsWith('image/')) {
+        const blob = item.getAsFile();
+        if (blob) {
+          handledImage = true;
+          await handleImageBlob(blob);
+        }
+      }
+    }
+    if (handledImage) return;
+
+    const text = e.clipboardData.getData('text');
+    if (isInsideGrid && !isEditableTarget && text) {
+      e.preventDefault();
+      pasteRangeToGrid(text);
+    }
+  }, [handleImageBlob, pasteRangeToGrid]);
+
+  // Add paste event listener
+  useEffect(() => {
+    const handlePasteEvent = (e: ClipboardEvent) => handlePaste(e);
+    document.addEventListener('paste', handlePasteEvent);
+    return () => document.removeEventListener('paste', handlePasteEvent);
+  }, [handlePaste]);
+
+  const handleGridKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'c') {
+      e.preventDefault();
+      copySelectionToClipboard();
+    } else if (e.key === 'Escape') {
+      setGridSelection(null);
     }
   };
 
@@ -720,6 +874,38 @@ export default function Home() {
     };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
+  };
+
+  const normalizeSelection = (sel: { startRow: number; startCol: number; endRow: number; endCol: number }) => ({
+    startRow: Math.min(sel.startRow, sel.endRow),
+    endRow: Math.max(sel.startRow, sel.endRow),
+    startCol: Math.min(sel.startCol, sel.endCol),
+    endCol: Math.max(sel.startCol, sel.endCol),
+  });
+
+  const startSelection = (rowIdx: number, colIdx: number) => {
+    gridContainerRef.current?.focus();
+    setIsSelectingCells(true);
+    hasDraggedSelectionRef.current = false;
+    setGridSelection({ startRow: rowIdx, startCol: colIdx, endRow: rowIdx, endCol: colIdx });
+  };
+
+  const extendSelection = (rowIdx: number, colIdx: number) => {
+    if (!isSelectingCells) return;
+    hasDraggedSelectionRef.current = true;
+    setGridSelection((sel) => sel ? { ...sel, endRow: rowIdx, endCol: colIdx } : { startRow: rowIdx, startCol: colIdx, endRow: rowIdx, endCol: colIdx });
+  };
+
+  useEffect(() => {
+    const onUp = () => setIsSelectingCells(false);
+    window.addEventListener('mouseup', onUp);
+    return () => window.removeEventListener('mouseup', onUp);
+  }, []);
+
+  const isCellSelected = (rowIdx: number, colIdx: number) => {
+    if (!gridSelection) return false;
+    const sel = normalizeSelection(gridSelection);
+    return rowIdx >= sel.startRow && rowIdx <= sel.endRow && colIdx >= sel.startCol && colIdx <= sel.endCol;
   };
 
   const handleFieldNameClick = (index: number) => {
@@ -1054,106 +1240,133 @@ export default function Home() {
             </div>
           </CardHeader>
           <CardContent>
-            <Table className="table-fixed w-full border border-gray-300 rounded-md overflow-hidden">
-              <TableHeader>
-                <TableRow className="bg-gray-100">
-                  <TableHead
-                    className="text-left border-r border-gray-300 relative select-none text-sm"
-                    style={{ width: columnWidths['__FIELD__'], minWidth: columnWidths['__FIELD__'] }}
-                  >
-                    <div className="pr-2">Field</div>
-                    <div
-                      role="separator"
-                      aria-label="Resize Field column"
-                      onMouseDown={(e) => beginResize(e, '__FIELD__')}
-                      className={`absolute top-0 right-0 h-full w-1 cursor-col-resize ${resizingCol === '__FIELD__' ? 'bg-primary/50' : 'hover:bg-primary/40'}`}
-                    />
-                  </TableHead>
-                  {caseOptions.map((c, idx) => (
+            <div
+              ref={gridContainerRef}
+              tabIndex={0}
+              onKeyDown={handleGridKeyDown}
+              className="rounded-md border border-gray-300 shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/40 bg-white overflow-hidden"
+            >
+              <Table className="table-fixed w-full">
+                <TableHeader>
+                  <TableRow className="bg-gradient-to-b from-gray-50 to-gray-100">
                     <TableHead
-                      key={c}
-                      className={`text-left border-gray-300 relative select-none text-sm${idx < caseOptions.length - 1 ? ' border-r' : ''}`}
-                      style={{ width: columnWidths[c], minWidth: columnWidths[c] }}
-                      title={c}
-                    >
-                      <div className="pr-2 truncate" title={c}>{c}</div>
-                      <div
-                        role="separator"
-                        aria-label={`Resize ${c} column`}
-                        onMouseDown={(e) => beginResize(e, c)}
-                        className={`absolute top-0 right-0 h-full w-1 cursor-col-resize ${resizingCol === c ? 'bg-primary/50' : 'hover:bg-primary/40'}`}
-                      />
-                    </TableHead>
-                  ))}
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {fields.map((field, rowIdx) => (
-                  <TableRow key={`${field}-${rowIdx}`} className="odd:bg-white even:bg-gray-50 hover:bg-blue-50">
-                    <TableCell
-                      className="font-medium text-left border-r border-gray-200 px-2 py-1 text-sm"
+                      className="text-left border-r border-gray-300 relative select-none text-sm font-semibold text-slate-700"
                       style={{ width: columnWidths['__FIELD__'], minWidth: columnWidths['__FIELD__'] }}
                     >
-                      <div className="flex items-center justify-between gap-2">
-                        {editingFieldIndex === rowIdx ? (
-                          <input
-                            type="text"
-                            value={editingFieldName}
-                            autoFocus
-                            onChange={handleFieldNameChange}
-                            onBlur={handleFieldNameBlur}
-                            onKeyDown={handleFieldNameKeyDown}
-                            className="w-full px-1 py-0.5 border rounded text-sm"
-                            title={`Edit field name`}
-                            aria-label={`Edit field name`}
-                          />
-                        ) : (
-                          <span className="cursor-pointer truncate" title={field} onClick={() => handleFieldNameClick(rowIdx)}>{field}</span>
-                        )}
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => handleRemoveField(rowIdx)}
-                          title="Remove field"
-                          aria-label="Remove field"
-                        >
-                          <X className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </TableCell>
-                    {caseOptions.map((c, idx) => {
-                      const value = cases[c]?.[field] || '';
-                      const isChanged = changedFields[c]?.has(field);
-                      const isEditing = editingCell && editingCell.caseName === c && editingCell.field === field;
-                      return (
-                        <TableCell
-                          key={c}
-                          className={`text-left cursor-pointer ${idx < caseOptions.length - 1 ? ' border-r' : ''} border-gray-200 px-2 py-1 text-sm`}
-                          style={{ ...(isChanged ? { backgroundColor: '#fff8c6' } : {}), width: columnWidths[c], minWidth: columnWidths[c] }}
-                          onClick={() => { if (!isEditing) handleCellClick(c, field); }}
-                        >
-                          {isEditing ? (
-                            <input
-                              type="text"
-                              value={editingValue}
-                              autoFocus
-                              onChange={handleCellChange}
-                              onBlur={handleCellBlur}
-                              onKeyDown={handleCellKeyDown}
-                              className="w-full px-1 py-0.5 border rounded text-sm"
-                              title={`Edit ${field} for ${c}`}
-                              aria-label={`Edit ${field} for ${c}`}
-                            />
-                          ) : (
-                            <span className="block truncate" title={value}>{value}</span>
-                          )}
-                        </TableCell>
-                      );
-                    })}
+                      <div className="pr-2 uppercase tracking-wide text-xs">Field</div>
+                      <div
+                        role="separator"
+                        aria-label="Resize Field column"
+                        onMouseDown={(e) => beginResize(e, '__FIELD__')}
+                        className={`absolute top-0 right-0 h-full w-1 cursor-col-resize ${resizingCol === '__FIELD__' ? 'bg-primary/50' : 'hover:bg-primary/40'}`}
+                      />
+                    </TableHead>
+                    {caseOptions.map((c, idx) => (
+                      <TableHead
+                        key={c}
+                        className={`text-left border-gray-300 relative select-none text-sm font-semibold text-slate-700${idx < caseOptions.length - 1 ? ' border-r' : ''}`}
+                        style={{ width: columnWidths[c], minWidth: columnWidths[c] }}
+                        title={c}
+                      >
+                        <div className="pr-2 truncate uppercase tracking-wide text-xs" title={c}>{c}</div>
+                        <div
+                          role="separator"
+                          aria-label={`Resize ${c} column`}
+                          onMouseDown={(e) => beginResize(e, c)}
+                          className={`absolute top-0 right-0 h-full w-1 cursor-col-resize ${resizingCol === c ? 'bg-primary/50' : 'hover:bg-primary/40'}`}
+                        />
+                      </TableHead>
+                    ))}
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                </TableHeader>
+                <TableBody>
+                  {fields.map((field, rowIdx) => {
+                    const fieldSelected = isCellSelected(rowIdx, 0);
+                    return (
+                      <TableRow key={`${field}-${rowIdx}`} className="odd:bg-white even:bg-gray-50 hover:bg-blue-50/40 transition-colors">
+                        <TableCell
+                          className={`font-medium text-left border-r border-gray-200 px-2 py-1 text-sm relative ${fieldSelected ? 'ring-2 ring-primary/60 bg-primary/10' : ''}`}
+                          style={{ width: columnWidths['__FIELD__'], minWidth: columnWidths['__FIELD__'] }}
+                          onMouseDown={() => { if (editingFieldIndex === rowIdx) return; startSelection(rowIdx, 0); }}
+                          onMouseEnter={() => extendSelection(rowIdx, 0)}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            {editingFieldIndex === rowIdx ? (
+                              <input
+                                type="text"
+                                value={editingFieldName}
+                                autoFocus
+                                onChange={handleFieldNameChange}
+                                onBlur={handleFieldNameBlur}
+                                onKeyDown={handleFieldNameKeyDown}
+                                className="w-full px-1 py-0.5 border rounded text-sm"
+                                title={`Edit field name`}
+                                aria-label={`Edit field name`}
+                              />
+                            ) : (
+                              <span className="cursor-pointer truncate" title={field} onClick={() => handleFieldNameClick(rowIdx)}>{field}</span>
+                            )}
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={(e) => { e.stopPropagation(); handleRemoveField(rowIdx); }}
+                              onMouseDown={(e) => e.stopPropagation()}
+                              title="Remove field"
+                              aria-label="Remove field"
+                            >
+                              <X className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                        {caseOptions.map((c, idx) => {
+                          const value = cases[c]?.[field] || '';
+                          const isChanged = changedFields[c]?.has(field);
+                          const isEditing = editingCell && editingCell.caseName === c && editingCell.field === field;
+                          const isSelected = isCellSelected(rowIdx, idx + 1);
+                          const cellStyle = {
+                            ...(isChanged ? { backgroundColor: isSelected ? '#e8f2ff' : '#fff8c6' } : {}),
+                            width: columnWidths[c],
+                            minWidth: columnWidths[c]
+                          };
+                          return (
+                            <TableCell
+                              key={c}
+                              className={`text-left cursor-pointer ${idx < caseOptions.length - 1 ? ' border-r' : ''} border-gray-200 px-2 py-1 text-sm relative ${isSelected ? 'ring-2 ring-primary/60 bg-primary/10' : ''}`}
+                              style={cellStyle}
+                              onMouseDown={() => { if (isEditing) return; startSelection(rowIdx, idx + 1); }}
+                              onMouseEnter={() => extendSelection(rowIdx, idx + 1)}
+                              onClick={() => {
+                                if (hasDraggedSelectionRef.current) {
+                                  hasDraggedSelectionRef.current = false;
+                                  return;
+                                }
+                                if (!isEditing) handleCellClick(c, field);
+                              }}
+                            >
+                              {isEditing ? (
+                                <input
+                                  type="text"
+                                  value={editingValue}
+                                  autoFocus
+                                  onChange={handleCellChange}
+                                  onBlur={handleCellBlur}
+                                  onKeyDown={handleCellKeyDown}
+                                  className="w-full px-1 py-0.5 border rounded text-sm"
+                                  title={`Edit ${field} for ${c}`}
+                                  aria-label={`Edit ${field} for ${c}`}
+                                />
+                              ) : (
+                                <span className="block truncate" title={value}>{value}</span>
+                              )}
+                            </TableCell>
+                          );
+                        })}
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
           </CardContent>
         </Card>
       </div>
