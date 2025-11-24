@@ -15,6 +15,50 @@ interface ExtractedFields {
 
 const CASE_OPTIONS = ['case1', 'case2', 'case3'];
 
+const normalizeSelection = (sel: { startRow: number; startCol: number; endRow: number; endCol: number }) => ({
+  startRow: Math.min(sel.startRow, sel.endRow),
+  endRow: Math.max(sel.startRow, sel.endRow),
+  startCol: Math.min(sel.startCol, sel.endCol),
+  endCol: Math.max(sel.startCol, sel.endCol),
+});
+
+interface GridSnapshot {
+  fields: string[];
+  cases: { [caseName: string]: ExtractedFields | null };
+  changedFields: { [caseName: string]: Set<string> };
+  deletedFields: string[];
+  fieldAliases: Record<string, string>;
+  caseOptions: string[];
+  selectedCase: string;
+}
+
+const cloneCases = (source: { [caseName: string]: ExtractedFields | null }) => {
+  const result: { [caseName: string]: ExtractedFields | null } = {};
+  Object.keys(source).forEach((key) => {
+    const value = source[key];
+    result[key] = value ? { ...value } : null;
+  });
+  return result;
+};
+
+const cloneChangedFields = (source: { [caseName: string]: Set<string> }) => {
+  const result: { [caseName: string]: Set<string> } = {};
+  Object.keys(source).forEach((key) => {
+    result[key] = new Set(source[key] || []);
+  });
+  return result;
+};
+
+const cloneSnapshot = (snapshot: GridSnapshot): GridSnapshot => ({
+  fields: [...snapshot.fields],
+  cases: cloneCases(snapshot.cases),
+  changedFields: cloneChangedFields(snapshot.changedFields),
+  deletedFields: [...snapshot.deletedFields],
+  fieldAliases: { ...snapshot.fieldAliases },
+  caseOptions: [...snapshot.caseOptions],
+  selectedCase: snapshot.selectedCase,
+});
+
 export default function Home() {
   const [dataUrl, setDataUrl] = useState<string | null>(null);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
@@ -58,9 +102,68 @@ export default function Home() {
   const [resizingCol, setResizingCol] = useState<string | null>(null);
   const resizeInfoRef = useRef<{ startX: number; startWidth: number; colKey: string } | null>(null);
   const [gridSelection, setGridSelection] = useState<{ startRow: number; startCol: number; endRow: number; endCol: number } | null>(null);
+  const [selectionLockedColumn, setSelectionLockedColumn] = useState<number | null>(null);
+  const lockSelectionToFieldRef = useRef(false);
   const [isSelectingCells, setIsSelectingCells] = useState(false);
   const hasDraggedSelectionRef = useRef(false);
   const { addToast } = useToast();
+  const [history, setHistory] = useState<GridSnapshot[]>([]);
+  const [redoStack, setRedoStack] = useState<GridSnapshot[]>([]);
+  const [selectFlash, setSelectFlash] = useState(false);
+  const [isHorizontalView, setIsHorizontalView] = useState(false);
+
+  const snapshotCurrentState = useCallback((): GridSnapshot => cloneSnapshot({
+    fields,
+    cases,
+    changedFields,
+    deletedFields,
+    fieldAliases,
+    caseOptions,
+    selectedCase,
+  }), [fields, cases, changedFields, deletedFields, fieldAliases, caseOptions, selectedCase]);
+
+  const pushHistory = useCallback(() => {
+    setHistory(prev => [...prev, snapshotCurrentState()]);
+    setRedoStack([]);
+  }, [snapshotCurrentState]);
+
+  const applySnapshot = useCallback((snapshot: GridSnapshot) => {
+    const cloned = cloneSnapshot(snapshot);
+    setFields(cloned.fields);
+    setCases(cloned.cases);
+    setChangedFields(() => cloned.changedFields);
+    setDeletedFields(cloned.deletedFields);
+    setFieldAliases(cloned.fieldAliases);
+    setCaseOptions(cloned.caseOptions);
+    setSelectedCase(cloned.selectedCase);
+    setGridSelection(null);
+    setSelectionLockedColumn(null);
+    lockSelectionToFieldRef.current = false;
+    setEditingCell(null);
+    setEditingFieldIndex(null);
+    setEditingValue('');
+  }, []);
+
+  const undo = useCallback(() => {
+    setHistory(prev => {
+      if (!prev.length) return prev;
+      const nextHistory = [...prev];
+      const snapshot = nextHistory.pop()!;
+      setRedoStack(stack => [snapshotCurrentState(), ...stack]);
+      applySnapshot(snapshot);
+      return nextHistory;
+    });
+  }, [snapshotCurrentState, applySnapshot]);
+
+  const redoHistory = useCallback(() => {
+    setRedoStack(prev => {
+      if (!prev.length) return prev;
+      const [snapshot, ...rest] = prev;
+      setHistory(hist => [...hist, snapshotCurrentState()]);
+      applySnapshot(snapshot);
+      return rest;
+    });
+  }, [snapshotCurrentState, applySnapshot]);
 
   const fileToDataUrl = useCallback((file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -572,6 +675,7 @@ export default function Home() {
   // Fields are managed dynamically via `fields` state
 
   const handleAddCase = () => {
+    pushHistory();
     let nextNum = 1;
     while (caseOptions.includes(`case${nextNum}`)) nextNum++;
     setCaseOptions([...caseOptions, `case${nextNum}`]);
@@ -579,21 +683,15 @@ export default function Home() {
 
   const handleRemoveCase = () => {
     if (caseOptions.length <= 1) return;
-    // Find the case with the largest number
-    const maxCase = caseOptions.reduce((max, cur) => {
-      const num = parseInt(cur.replace(/[^\d]/g, ''));
-      const maxNum = parseInt(max.replace(/[^\d]/g, ''));
-      return num > maxNum ? cur : max;
-    }, caseOptions[0]);
-    const filtered = caseOptions.filter(c => c !== maxCase);
+    pushHistory();
+    const caseToRemove = selectedCase || caseOptions[caseOptions.length - 1];
+    const filtered = caseOptions.filter(c => c !== caseToRemove);
+    const fallBackCase = filtered[0] || CASE_OPTIONS[0];
     setCaseOptions(filtered);
-    // If the removed case was selected, select the first remaining case
-    if (selectedCase === maxCase) {
-      setSelectedCase(filtered[0]);
-    }
+    setSelectedCase(fallBackCase);
     setCases(prev => {
       const copy = { ...prev };
-      delete copy[maxCase];
+      delete copy[caseToRemove];
       return copy;
     });
   };
@@ -638,9 +736,15 @@ export default function Home() {
     }
   };
 
-  const copySelectionToClipboard = useCallback(async () => {
-    if (!gridSelection) return;
-    const sel = normalizeSelection(gridSelection);
+  const buildSelectionTsv = useCallback(() => {
+    if (!gridSelection) return null;
+    const isFieldOnlySelection = selectionLockedColumn === 0;
+    const sel = {
+      startRow: Math.min(gridSelection.startRow, gridSelection.endRow),
+      endRow: Math.max(gridSelection.startRow, gridSelection.endRow),
+      startCol: isFieldOnlySelection ? 0 : Math.min(gridSelection.startCol, gridSelection.endCol),
+      endCol: isFieldOnlySelection ? 0 : Math.max(gridSelection.startCol, gridSelection.endCol),
+    };
     const rows: string[][] = [];
     for (let r = sel.startRow; r <= sel.endRow; r++) {
       const row: string[] = [];
@@ -655,11 +759,20 @@ export default function Home() {
       }
       rows.push(row);
     }
-    const tsv = rows.map(r => r.join('\t')).join('\n');
+    return rows.map(r => r.join('\t')).join('\n');
+  }, [gridSelection, fields, caseOptions, cases, selectionLockedColumn]);
+
+  const triggerCopyFeedback = useCallback(() => {
+    setTableCopySuccess(true);
+    setTimeout(() => setTableCopySuccess(false), 1200);
+  }, []);
+
+  const copySelectionToClipboard = useCallback(async () => {
+    const tsv = buildSelectionTsv();
+    if (!tsv) return;
     try {
       await navigator.clipboard.writeText(tsv);
-      setTableCopySuccess(true);
-      setTimeout(() => setTableCopySuccess(false), 1200);
+      triggerCopyFeedback();
     } catch (err) {
       const textArea = document.createElement('textarea');
       textArea.value = tsv;
@@ -667,13 +780,13 @@ export default function Home() {
       textArea.select();
       document.execCommand('copy');
       document.body.removeChild(textArea);
-      setTableCopySuccess(true);
-      setTimeout(() => setTableCopySuccess(false), 1200);
+      triggerCopyFeedback();
     }
-  }, [gridSelection, fields, caseOptions, cases]);
+  }, [buildSelectionTsv]);
 
   const pasteRangeToGrid = useCallback((text: string) => {
     if (!text.trim()) return;
+    pushHistory();
     const lines = text.replace(/\r/g, '').split('\n').filter(Boolean);
     const matrix = lines.map(line => line.split('\t'));
     const sel = normalizeSelection(gridSelection ?? { startRow: 0, startCol: 0, endRow: 0, endCol: 0 });
@@ -762,31 +875,31 @@ export default function Home() {
     if (undelete.size > 0) {
       setDeletedFields(prev => prev.filter(f => !undelete.has(f)));
     }
-  }, [gridSelection, fields, caseOptions, cases, changedFields]);
+  }, [gridSelection, fields, caseOptions, cases, changedFields, pushHistory]);
 
   const handlePaste = useCallback(async (e: ClipboardEvent) => {
     if (!e.clipboardData) return;
     const target = e.target as HTMLElement | null;
     const isEditableTarget = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
     const isInsideGrid = target && gridContainerRef.current && gridContainerRef.current.contains(target);
+    const text = e.clipboardData.getData('text');
 
+    if (isInsideGrid && !isEditableTarget && text && text.length > 0) {
+      e.preventDefault();
+      pasteRangeToGrid(text);
+      return;
+    }
+
+    // Only treat the clipboard contents as an image if we didn't already consume tabular text
     const items = e.clipboardData.items;
-    let handledImage = false;
     for (const item of items) {
       if (item.type && item.type.startsWith('image/')) {
         const blob = item.getAsFile();
         if (blob) {
-          handledImage = true;
           await handleImageBlob(blob);
+          return;
         }
       }
-    }
-    if (handledImage) return;
-
-    const text = e.clipboardData.getData('text');
-    if (isInsideGrid && !isEditableTarget && text) {
-      e.preventDefault();
-      pasteRangeToGrid(text);
     }
   }, [handleImageBlob, pasteRangeToGrid]);
 
@@ -797,12 +910,150 @@ export default function Home() {
     return () => document.removeEventListener('paste', handlePasteEvent);
   }, [handlePaste]);
 
+  useEffect(() => {
+    const handleCopyEvent = (e: ClipboardEvent) => {
+      if (!gridSelection) return;
+      const target = e.target as HTMLElement | null;
+      const isInsideGrid = target && gridContainerRef.current && gridContainerRef.current.contains(target);
+      if (!isInsideGrid) return;
+      const tsv = buildSelectionTsv();
+      if (!tsv) return;
+      if (e.clipboardData) {
+        e.preventDefault();
+        e.clipboardData.setData('text/plain', tsv);
+        triggerCopyFeedback();
+      }
+    };
+    document.addEventListener('copy', handleCopyEvent);
+    return () => document.removeEventListener('copy', handleCopyEvent);
+  }, [gridSelection, buildSelectionTsv, triggerCopyFeedback]);
+
+  useEffect(() => {
+    setGridSelection(null);
+    setSelectionLockedColumn(null);
+    lockSelectionToFieldRef.current = false;
+  }, [isHorizontalView]);
+
+  useEffect(() => {
+    if (!selectedCase) return;
+    setSelectFlash(true);
+    let toggles = 0;
+    const flashInterval = setInterval(() => {
+      toggles += 1;
+      setSelectFlash(prev => !prev);
+      if (toggles >= 3) {
+        clearInterval(flashInterval);
+        setSelectFlash(false);
+      }
+    }, 180);
+    return () => clearInterval(flashInterval);
+  }, [selectedCase]);
+
+  const clearSelection = useCallback(() => {
+    if (!gridSelection) return;
+    pushHistory();
+    const sel = normalizeSelection(gridSelection);
+    const rowsToRemove = new Set<number>();
+    const nextCases: { [caseName: string]: ExtractedFields | null } = {};
+    const nextChanged: { [caseName: string]: Set<string> } = {};
+    caseOptions.forEach(c => {
+      nextCases[c] = { ...(cases[c] || {}) };
+      nextChanged[c] = new Set(changedFields[c] || []);
+    });
+    let casesModified = false;
+
+    for (let r = sel.startRow; r <= sel.endRow; r++) {
+      const fieldName = fields[r];
+      for (let c = sel.startCol; c <= sel.endCol; c++) {
+        if (c === 0) {
+          rowsToRemove.add(r);
+          continue;
+        }
+        const caseIdx = c - 1;
+        if (caseIdx < 0 || caseIdx >= caseOptions.length || !fieldName) continue;
+        const caseName = caseOptions[caseIdx];
+        const data = nextCases[caseName] || {};
+        if (fieldName in data) {
+          delete data[fieldName];
+          nextCases[caseName] = data;
+          casesModified = true;
+        }
+        const changedSet = nextChanged[caseName];
+        if (changedSet.has(fieldName)) {
+          changedSet.delete(fieldName);
+        }
+      }
+    }
+
+    if (rowsToRemove.size > 0) {
+      const updatedFields = [...fields];
+      const removedFieldNames: string[] = [];
+      [...rowsToRemove].sort((a, b) => b - a).forEach(idx => {
+        if (idx >= 0 && idx < updatedFields.length) {
+          const removed = updatedFields.splice(idx, 1)[0];
+          if (removed) removedFieldNames.push(removed);
+        }
+      });
+      removedFieldNames.forEach(name => {
+        Object.keys(nextCases).forEach(caseName => {
+          const data = nextCases[caseName] || {};
+          if (name in data) {
+            delete data[name];
+            nextCases[caseName] = data;
+            casesModified = true;
+          }
+        });
+        Object.keys(nextChanged).forEach(caseName => {
+          nextChanged[caseName].delete(name);
+        });
+      });
+      setFields(updatedFields);
+      setDeletedFields(prev => {
+        const next = [...prev];
+        removedFieldNames.forEach(name => {
+          if (name && !next.includes(name)) next.push(name);
+        });
+        return next;
+      });
+      casesModified = true;
+    }
+
+    if (casesModified) {
+      setCases(nextCases);
+      setChangedFields(() => {
+        const result: { [caseName: string]: Set<string> } = {};
+        Object.keys(nextChanged).forEach(cn => {
+          result[cn] = new Set(nextChanged[cn]);
+        });
+        return result;
+      });
+    }
+
+    setGridSelection(null);
+    setSelectionLockedColumn(null);
+    lockSelectionToFieldRef.current = false;
+  }, [gridSelection, caseOptions, cases, changedFields, fields, pushHistory]);
+
   const handleGridKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'c') {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+      e.preventDefault();
+      if (e.shiftKey) {
+        redoHistory();
+      } else {
+        undo();
+      }
+    } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'y') {
+      e.preventDefault();
+      redoHistory();
+    } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'c') {
       e.preventDefault();
       copySelectionToClipboard();
     } else if (e.key === 'Escape') {
       setGridSelection(null);
+      setSelectionLockedColumn(null);
+    } else if ((e.key === 'Delete' || e.key === 'Backspace') && gridSelection && !editingCell) {
+      e.preventDefault();
+      clearSelection();
     }
   };
 
@@ -817,13 +1068,24 @@ export default function Home() {
 
   const handleCellBlur = () => {
     if (editingCell) {
-      setCases(prev => {
-        const updated = { ...prev };
-        const caseData = { ...(updated[editingCell.caseName] || {}) };
-        caseData[editingCell.field] = editingValue;
-        updated[editingCell.caseName] = caseData;
-        return updated;
-      });
+      const prevValue = cases[editingCell.caseName]?.[editingCell.field] || '';
+      if (prevValue !== editingValue) {
+        pushHistory();
+        setCases(prev => {
+          const updated = { ...prev };
+          const caseData = { ...(updated[editingCell.caseName] || {}) };
+          caseData[editingCell.field] = editingValue;
+          updated[editingCell.caseName] = caseData;
+          return updated;
+        });
+        setChangedFields(prev => {
+          const next = { ...prev };
+          const set = new Set(next[editingCell.caseName] || []);
+          set.add(editingCell.field);
+          next[editingCell.caseName] = set;
+          return next;
+        });
+      }
     }
     setEditingCell(null);
   };
@@ -876,28 +1138,42 @@ export default function Home() {
     window.addEventListener('mouseup', onUp);
   };
 
-  const normalizeSelection = (sel: { startRow: number; startCol: number; endRow: number; endCol: number }) => ({
-    startRow: Math.min(sel.startRow, sel.endRow),
-    endRow: Math.max(sel.startRow, sel.endRow),
-    startCol: Math.min(sel.startCol, sel.endCol),
-    endCol: Math.max(sel.startCol, sel.endCol),
-  });
+  const clearNativeSelection = () => {
+    if (typeof window === 'undefined') return;
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0) sel.removeAllRanges();
+  };
 
   const startSelection = (rowIdx: number, colIdx: number) => {
+    clearNativeSelection();
     gridContainerRef.current?.focus();
     setIsSelectingCells(true);
     hasDraggedSelectionRef.current = false;
+    lockSelectionToFieldRef.current = colIdx === 0;
+    setSelectionLockedColumn(colIdx === 0 ? 0 : null);
+    if (colIdx > 0) {
+      const caseIdx = colIdx - 1;
+      const targetCase = caseOptions[caseIdx];
+      if (targetCase && targetCase !== selectedCase) {
+        setSelectedCase(targetCase);
+      }
+    }
     setGridSelection({ startRow: rowIdx, startCol: colIdx, endRow: rowIdx, endCol: colIdx });
   };
 
   const extendSelection = (rowIdx: number, colIdx: number) => {
     if (!isSelectingCells) return;
+    clearNativeSelection();
     hasDraggedSelectionRef.current = true;
-    setGridSelection((sel) => sel ? { ...sel, endRow: rowIdx, endCol: colIdx } : { startRow: rowIdx, startCol: colIdx, endRow: rowIdx, endCol: colIdx });
+    const effectiveColIdx = lockSelectionToFieldRef.current ? 0 : colIdx;
+    setGridSelection((sel) => sel ? { ...sel, endRow: rowIdx, endCol: effectiveColIdx } : { startRow: rowIdx, startCol: effectiveColIdx, endRow: rowIdx, endCol: effectiveColIdx });
   };
 
   useEffect(() => {
-    const onUp = () => setIsSelectingCells(false);
+    const onUp = () => {
+      setIsSelectingCells(false);
+      lockSelectionToFieldRef.current = false;
+    };
     window.addEventListener('mouseup', onUp);
     return () => window.removeEventListener('mouseup', onUp);
   }, []);
@@ -925,7 +1201,12 @@ export default function Home() {
       setEditingFieldName('');
       return;
     }
-    if (nextName !== prevName && fields.includes(nextName)) {
+    if (nextName === prevName) {
+      setEditingFieldIndex(null);
+      setEditingFieldName('');
+      return;
+    }
+    if (fields.includes(nextName)) {
       addToast({
         title: '중복 항목 이름',
         description: '이미 존재하는 항목 이름입니다.',
@@ -933,46 +1214,43 @@ export default function Home() {
       });
       return;
     }
+    pushHistory();
     setFields(prev => {
       const copy = [...prev];
       copy[index] = nextName;
       return copy;
     });
     // Record alias so future extractions map old -> new and un-delete target
-    if (nextName !== prevName) {
-      setFieldAliases(prev => ({ ...prev, [prevName]: nextName }));
-      setDeletedFields(prev => prev.filter(f => f !== nextName));
-    }
-    if (nextName !== prevName) {
-      setCases(prev => {
-        const updated: { [caseName: string]: ExtractedFields | null } = { ...prev };
-        Object.keys(updated).forEach(cn => {
-          const data = { ...(updated[cn] || {}) };
-          if (prevName in data) {
-            const val = data[prevName];
-            delete data[prevName];
-            data[nextName] = val;
-            updated[cn] = data;
-          } else if (data[prevName] !== undefined) {
-            delete data[prevName];
-            updated[cn] = data;
-          }
-        });
-        return updated;
+    setFieldAliases(prev => ({ ...prev, [prevName]: nextName }));
+    setDeletedFields(prev => prev.filter(f => f !== nextName));
+    setCases(prev => {
+      const updated: { [caseName: string]: ExtractedFields | null } = { ...prev };
+      Object.keys(updated).forEach(cn => {
+        const data = { ...(updated[cn] || {}) };
+        if (prevName in data) {
+          const val = data[prevName];
+          delete data[prevName];
+          data[nextName] = val;
+          updated[cn] = data;
+        } else if (data[prevName] !== undefined) {
+          delete data[prevName];
+          updated[cn] = data;
+        }
       });
-      setChangedFields(prev => {
-        const copy: { [caseName: string]: Set<string> } = {} as any;
-        Object.keys(prev).forEach(cn => {
-          const s = new Set(prev[cn] || []);
-          if (s.has(prevName)) {
-            s.delete(prevName);
-            s.add(nextName);
-          }
-          copy[cn] = s;
-        });
-        return copy;
+      return updated;
+    });
+    setChangedFields(prev => {
+      const copy: { [caseName: string]: Set<string> } = {} as any;
+      Object.keys(prev).forEach(cn => {
+        const s = new Set(prev[cn] || []);
+        if (s.has(prevName)) {
+          s.delete(prevName);
+          s.add(nextName);
+        }
+        copy[cn] = s;
       });
-    }
+      return copy;
+    });
     setEditingFieldIndex(null);
     setEditingFieldName('');
   };
@@ -992,6 +1270,7 @@ export default function Home() {
   };
 
   const handleAddField = () => {
+    pushHistory();
     let base = 'new field';
     let name = base;
     let i = 1;
@@ -1005,6 +1284,7 @@ export default function Home() {
 
   const handleRemoveField = (index: number) => {
     const field = fields[index];
+    pushHistory();
     setFields(prev => prev.filter((_, i) => i !== index));
     // Remember deletion so extraction won’t re-add it
     setDeletedFields(prev => (prev.includes(field) ? prev : [...prev, field]));
@@ -1190,7 +1470,7 @@ export default function Home() {
                 value={markdown}
                 onChange={(e) => setMarkdown(e.target.value)}
                 placeholder="Markdown will appear here..."
-                className="min-h-[320px] font-mono"
+                className="h-[400px] overflow-auto resize-y field-sizing-fixed font-mono"
               />
             </CardContent>
           </Card>
@@ -1207,7 +1487,7 @@ export default function Home() {
                   id="case-select"
                   value={selectedCase}
                   onChange={e => setSelectedCase(e.target.value)}
-                  className="border rounded px-2 py-1"
+                  className={`border rounded px-2 py-1 transition-colors duration-150 ${selectFlash ? 'ring-2 ring-primary/60 bg-yellow-100 text-red-600' : 'text-foreground'}`}
                   title="Select case"
                   aria-label="Select case"
                 >
@@ -1218,6 +1498,9 @@ export default function Home() {
                 <Button variant="outline" onClick={handleAddCase}>Add Case</Button>
                 <Button variant="outline" onClick={handleRemoveCase} disabled={caseOptions.length <= 1}>Remove Case</Button>
                 <Button variant="outline" onClick={handleAddField}>Add Field</Button>
+                <Button variant="outline" onClick={() => setIsHorizontalView(prev => !prev)}>
+                  Tilting ({isHorizontalView ? 'Vertical' : 'Horizontal'})
+                </Button>
               </div>
               <Button
                 onClick={handleExtract}
@@ -1246,53 +1529,22 @@ export default function Home() {
               onKeyDown={handleGridKeyDown}
               className="rounded-md border border-gray-300 shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/40 bg-white overflow-hidden"
             >
-              <Table className="table-fixed w-full">
-                <TableHeader>
-                  <TableRow className="bg-gradient-to-b from-gray-50 to-gray-100">
-                    <TableHead
-                      className="text-left border-r border-gray-300 relative select-none text-sm font-semibold text-slate-700"
-                      style={{ width: columnWidths['__FIELD__'], minWidth: columnWidths['__FIELD__'] }}
-                    >
-                      <div className="pr-2 uppercase tracking-wide text-xs">Field</div>
-                      <div
-                        role="separator"
-                        aria-label="Resize Field column"
-                        onMouseDown={(e) => beginResize(e, '__FIELD__')}
-                        className={`absolute top-0 right-0 h-full w-1 cursor-col-resize ${resizingCol === '__FIELD__' ? 'bg-primary/50' : 'hover:bg-primary/40'}`}
-                      />
-                    </TableHead>
-                    {caseOptions.map((c, idx) => (
-                      <TableHead
-                        key={c}
-                        className={`text-left border-gray-300 relative select-none text-sm font-semibold text-slate-700${idx < caseOptions.length - 1 ? ' border-r' : ''}`}
-                        style={{ width: columnWidths[c], minWidth: columnWidths[c] }}
-                        title={c}
-                      >
-                        <div className="pr-2 truncate uppercase tracking-wide text-xs" title={c}>{c}</div>
-                        <div
-                          role="separator"
-                          aria-label={`Resize ${c} column`}
-                          onMouseDown={(e) => beginResize(e, c)}
-                          className={`absolute top-0 right-0 h-full w-1 cursor-col-resize ${resizingCol === c ? 'bg-primary/50' : 'hover:bg-primary/40'}`}
-                        />
-                      </TableHead>
-                    ))}
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {fields.map((field, rowIdx) => {
-                    const fieldSelected = isCellSelected(rowIdx, 0);
-                    return (
-                      <TableRow key={`${field}-${rowIdx}`} className="odd:bg-white even:bg-gray-50 hover:bg-blue-50/40 transition-colors">
-                        <TableCell
-                          className={`font-medium text-left border-r border-gray-200 px-2 py-1 text-sm relative ${fieldSelected ? 'ring-2 ring-primary/60 bg-primary/10' : ''}`}
-                          style={{ width: columnWidths['__FIELD__'], minWidth: columnWidths['__FIELD__'] }}
-                          onMouseDown={() => { if (editingFieldIndex === rowIdx) return; startSelection(rowIdx, 0); }}
-                          onMouseEnter={() => extendSelection(rowIdx, 0)}
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            {editingFieldIndex === rowIdx ? (
-                              <input
+              {isHorizontalView ? (
+                <div className="overflow-auto">
+                  <Table className="w-full min-w-[900px]">
+                    <TableHeader>
+                      <TableRow className="bg-gradient-to-b from-gray-50 to-gray-100">
+                        <TableHead className="text-left border-r border-gray-300 select-none text-sm font-semibold text-slate-700 w-32 min-w-[120px] uppercase tracking-wide">
+                          Case
+                        </TableHead>
+                        {fields.map((field, idx) => (
+                          <TableHead
+                            key={`${field}-horizontal-${idx}`}
+                            className="text-left border-gray-300 text-sm font-semibold text-slate-700 min-w-[160px] whitespace-pre-wrap break-words"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              {editingFieldIndex === idx ? (
+                                <input
                                 type="text"
                                 value={editingFieldName}
                                 autoFocus
@@ -1304,68 +1556,196 @@ export default function Home() {
                                 aria-label={`Edit field name`}
                               />
                             ) : (
-                              <span className="cursor-pointer truncate" title={field} onClick={() => handleFieldNameClick(rowIdx)}>{field}</span>
+                              <span className="cursor-pointer truncate" title={field} onClick={() => handleFieldNameClick(idx)}>{field}</span>
                             )}
                             <Button
                               variant="ghost"
                               size="icon"
-                              onClick={(e) => { e.stopPropagation(); handleRemoveField(rowIdx); }}
-                              onMouseDown={(e) => e.stopPropagation()}
+                              onClick={(e) => { e.stopPropagation(); handleRemoveField(idx); }}
                               title="Remove field"
                               aria-label="Remove field"
                             >
                               <X className="h-4 w-4" />
                             </Button>
                           </div>
-                        </TableCell>
-                        {caseOptions.map((c, idx) => {
-                          const value = cases[c]?.[field] || '';
-                          const isChanged = changedFields[c]?.has(field);
-                          const isEditing = editingCell && editingCell.caseName === c && editingCell.field === field;
-                          const isSelected = isCellSelected(rowIdx, idx + 1);
-                          const cellStyle = {
-                            ...(isChanged ? { backgroundColor: isSelected ? '#e8f2ff' : '#fff8c6' } : {}),
-                            width: columnWidths[c],
-                            minWidth: columnWidths[c]
-                          };
-                          return (
-                            <TableCell
-                              key={c}
-                              className={`text-left cursor-pointer ${idx < caseOptions.length - 1 ? ' border-r' : ''} border-gray-200 px-2 py-1 text-sm relative ${isSelected ? 'ring-2 ring-primary/60 bg-primary/10' : ''}`}
-                              style={cellStyle}
-                              onMouseDown={() => { if (isEditing) return; startSelection(rowIdx, idx + 1); }}
-                              onMouseEnter={() => extendSelection(rowIdx, idx + 1)}
-                              onClick={() => {
-                                if (hasDraggedSelectionRef.current) {
-                                  hasDraggedSelectionRef.current = false;
-                                  return;
-                                }
-                                if (!isEditing) handleCellClick(c, field);
-                              }}
-                            >
-                              {isEditing ? (
+                        </TableHead>
+                      ))}
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {caseOptions.map((caseName) => {
+                      const isActiveCase = selectedCase === caseName;
+                      return (
+                        <TableRow key={`horizontal-${caseName}`} className={`odd:bg-white even:bg-gray-50 hover:bg-blue-50/40 transition-colors ${isActiveCase ? 'bg-primary/5' : ''}`}>
+                          <TableCell
+                            className="font-semibold text-left border-r border-gray-200 px-2 py-1 uppercase tracking-wide cursor-pointer"
+                            onClick={() => { if (selectedCase !== caseName) setSelectedCase(caseName); }}
+                          >
+                            {caseName}
+                          </TableCell>
+                          {fields.map((field, idx) => {
+                            const value = cases[caseName]?.[field] || '';
+                            const isChanged = changedFields[caseName]?.has(field);
+                            const isEditing = editingCell && editingCell.caseName === caseName && editingCell.field === field;
+                            return (
+                              <TableCell
+                                key={`${caseName}-${field}`}
+                                className={`text-left cursor-pointer border-gray-200 px-2 py-1 text-sm min-w-[160px] whitespace-pre-wrap break-words ${idx < fields.length - 1 ? ' border-r' : ''} ${isChanged ? 'bg-yellow-50' : ''}`}
+                                onClick={() => {
+                                  if (!isEditing) handleCellClick(caseName, field);
+                                }}
+                              >
+                                {isEditing ? (
+                                  <input
+                                    type="text"
+                                    value={editingValue}
+                                    autoFocus
+                                    onChange={handleCellChange}
+                                    onBlur={handleCellBlur}
+                                    onKeyDown={handleCellKeyDown}
+                                    className="w-full px-1 py-0.5 border rounded text-sm"
+                                    title={`Edit ${field} for ${caseName}`}
+                                    aria-label={`Edit ${field} for ${caseName}`}
+                                  />
+                                ) : (
+                                  <span className="block truncate" title={value}>{value}</span>
+                                )}
+                              </TableCell>
+                            );
+                          })}
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                  </Table>
+                </div>
+              ) : (
+                <Table className="table-fixed w-full">
+                  <TableHeader>
+                    <TableRow className="bg-gradient-to-b from-gray-50 to-gray-100">
+                      <TableHead
+                        className="text-left border-r border-gray-300 relative select-none text-sm font-semibold text-slate-700"
+                        style={{ width: columnWidths['__FIELD__'], minWidth: columnWidths['__FIELD__'] }}
+                      >
+                        <div className="pr-2 uppercase tracking-wide text-xs">Field</div>
+                        <div
+                          role="separator"
+                          aria-label="Resize Field column"
+                          onMouseDown={(e) => beginResize(e, '__FIELD__')}
+                          className={`absolute top-0 right-0 h-full w-1 cursor-col-resize ${resizingCol === '__FIELD__' ? 'bg-primary/50' : 'hover:bg-primary/40'}`}
+                        />
+                      </TableHead>
+                      {caseOptions.map((c, idx) => (
+                        <TableHead
+                          key={c}
+                          className={`text-left border-gray-300 relative select-none text-sm font-semibold text-slate-700${idx < caseOptions.length - 1 ? ' border-r' : ''}`}
+                          style={{ width: columnWidths[c], minWidth: columnWidths[c] }}
+                          title={c}
+                          onClick={() => {
+                            if (selectedCase !== c) {
+                              setSelectedCase(c);
+                            }
+                          }}
+                        >
+                          <div className="pr-2 truncate uppercase tracking-wide text-xs" title={c}>{c}</div>
+                          <div
+                            role="separator"
+                            aria-label={`Resize ${c} column`}
+                            onMouseDown={(e) => beginResize(e, c)}
+                            className={`absolute top-0 right-0 h-full w-1 cursor-col-resize ${resizingCol === c ? 'bg-primary/50' : 'hover:bg-primary/40'}`}
+                          />
+                        </TableHead>
+                      ))}
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {fields.map((field, rowIdx) => {
+                      const fieldSelected = isCellSelected(rowIdx, 0);
+                      return (
+                        <TableRow key={`${field}-${rowIdx}`} className="odd:bg-white even:bg-gray-50 hover:bg-blue-50/40 transition-colors">
+                          <TableCell
+                            className={`font-medium text-left border-r border-gray-200 px-2 py-1 text-sm relative ${fieldSelected ? 'ring-2 ring-primary/60 bg-primary/10' : ''}`}
+                            style={{ width: columnWidths['__FIELD__'], minWidth: columnWidths['__FIELD__'] }}
+                            onMouseDown={(e) => { if (editingFieldIndex === rowIdx) return; e.preventDefault(); startSelection(rowIdx, 0); }}
+                            onMouseEnter={() => extendSelection(rowIdx, 0)}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              {editingFieldIndex === rowIdx ? (
                                 <input
                                   type="text"
-                                  value={editingValue}
+                                  value={editingFieldName}
                                   autoFocus
-                                  onChange={handleCellChange}
-                                  onBlur={handleCellBlur}
-                                  onKeyDown={handleCellKeyDown}
+                                  onChange={handleFieldNameChange}
+                                  onBlur={handleFieldNameBlur}
+                                  onKeyDown={handleFieldNameKeyDown}
                                   className="w-full px-1 py-0.5 border rounded text-sm"
-                                  title={`Edit ${field} for ${c}`}
-                                  aria-label={`Edit ${field} for ${c}`}
+                                  title={`Edit field name`}
+                                  aria-label={`Edit field name`}
                                 />
                               ) : (
-                                <span className="block truncate" title={value}>{value}</span>
+                                <span className="cursor-pointer truncate" title={field} onClick={() => handleFieldNameClick(rowIdx)}>{field}</span>
                               )}
-                            </TableCell>
-                          );
-                        })}
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={(e) => { e.stopPropagation(); handleRemoveField(rowIdx); }}
+                                onMouseDown={(e) => e.stopPropagation()}
+                                title="Remove field"
+                                aria-label="Remove field"
+                              >
+                                <X className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </TableCell>
+                          {caseOptions.map((c, idx) => {
+                            const value = cases[c]?.[field] || '';
+                            const isChanged = changedFields[c]?.has(field);
+                            const isEditing = editingCell && editingCell.caseName === c && editingCell.field === field;
+                            const isSelected = isCellSelected(rowIdx, idx + 1);
+                            const cellStyle = {
+                              ...(isChanged ? { backgroundColor: isSelected ? '#e8f2ff' : '#fff8c6' } : {}),
+                              width: columnWidths[c],
+                              minWidth: columnWidths[c]
+                            };
+                            return (
+                              <TableCell
+                                key={c}
+                                className={`text-left cursor-pointer ${idx < caseOptions.length - 1 ? ' border-r' : ''} border-gray-200 px-2 py-1 text-sm relative ${isSelected ? 'ring-2 ring-primary/60 bg-primary/10' : ''}`}
+                                style={cellStyle}
+                                onMouseDown={(e) => { if (isEditing) return; e.preventDefault(); startSelection(rowIdx, idx + 1); }}
+                                onMouseEnter={() => extendSelection(rowIdx, idx + 1)}
+                                onClick={() => {
+                                  if (hasDraggedSelectionRef.current) {
+                                    hasDraggedSelectionRef.current = false;
+                                    return;
+                                  }
+                                  if (!isEditing) handleCellClick(c, field);
+                                }}
+                              >
+                                {isEditing ? (
+                                  <input
+                                    type="text"
+                                    value={editingValue}
+                                    autoFocus
+                                    onChange={handleCellChange}
+                                    onBlur={handleCellBlur}
+                                    onKeyDown={handleCellKeyDown}
+                                    className="w-full px-1 py-0.5 border rounded text-sm"
+                                    title={`Edit ${field} for ${c}`}
+                                    aria-label={`Edit ${field} for ${c}`}
+                                  />
+                                ) : (
+                                  <span className="block truncate" title={value}>{value}</span>
+                                )}
+                              </TableCell>
+                            );
+                          })}
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              )}
             </div>
           </CardContent>
         </Card>
