@@ -111,6 +111,9 @@ export default function Home() {
   const [redoStack, setRedoStack] = useState<GridSnapshot[]>([]);
   const [selectFlash, setSelectFlash] = useState(false);
   const [isHorizontalView, setIsHorizontalView] = useState(false);
+  const [showUploadPanel, setShowUploadPanel] = useState(true);
+  const [showImagePanel, setShowImagePanel] = useState(true);
+  const [showMarkdownPanel, setShowMarkdownPanel] = useState(true);
 
   const snapshotCurrentState = useCallback((): GridSnapshot => cloneSnapshot({
     fields,
@@ -787,7 +790,8 @@ export default function Home() {
   const pasteRangeToGrid = useCallback((text: string) => {
     if (!text.trim()) return;
     pushHistory();
-    const lines = text.replace(/\r/g, '').split('\n').filter(Boolean);
+    // Preserve empty lines so blank rows are also pasted
+    const lines = text.replace(/\r/g, '').split('\n');
     const matrix = lines.map(line => line.split('\t'));
     const sel = normalizeSelection(gridSelection ?? { startRow: 0, startCol: 0, endRow: 0, endCol: 0 });
     let nextFields = [...fields];
@@ -1035,6 +1039,8 @@ export default function Home() {
   }, [gridSelection, caseOptions, cases, changedFields, fields, pushHistory]);
 
   const handleGridKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const isMod = e.metaKey || e.ctrlKey;
+    const isRenamingField = editingFieldIndex !== null;
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
       e.preventDefault();
       if (e.shiftKey) {
@@ -1042,22 +1048,48 @@ export default function Home() {
       } else {
         undo();
       }
-    } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'y') {
+    } else if (isMod && e.key.toLowerCase() === 'y') {
       e.preventDefault();
       redoHistory();
-    } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'c') {
+    } else if (isMod && e.key.toLowerCase() === 'c') {
       e.preventDefault();
       copySelectionToClipboard();
+    } else if (!editingCell && !isRenamingField && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+      e.preventDefault();
+      const delta = {
+        ArrowUp: [-1, 0],
+        ArrowDown: [1, 0],
+        ArrowLeft: [0, -1],
+        ArrowRight: [0, 1],
+      } as const;
+      const [dr, dc] = delta[e.key as keyof typeof delta];
+      moveSelection(dr, dc, e.shiftKey);
+    } else if (!editingCell && !isRenamingField && e.key === 'Tab') {
+      e.preventDefault();
+      moveSelection(0, e.shiftKey ? -1 : 1, false);
+    } else if (!editingCell && !isRenamingField && e.key === 'Enter') {
+      e.preventDefault();
+      startEditingFromSelection();
     } else if (e.key === 'Escape') {
       setGridSelection(null);
       setSelectionLockedColumn(null);
-    } else if ((e.key === 'Delete' || e.key === 'Backspace') && gridSelection && !editingCell) {
+    } else if ((e.key === 'Delete' || e.key === 'Backspace') && gridSelection && !editingCell && !isRenamingField) {
       e.preventDefault();
       clearSelection();
+    } else if (!editingCell && !isRenamingField && !isMod && !e.altKey && e.key.length === 1) {
+      e.preventDefault();
+      startEditingFromSelection(e.key);
     }
   };
 
   const handleCellClick = (caseName: string, field: string) => {
+    const rowIdx = fields.indexOf(field);
+    const colIdx = caseOptions.indexOf(caseName) + 1;
+    if (rowIdx >= 0 && colIdx >= 1) {
+      setGridSelection({ startRow: rowIdx, endRow: rowIdx, startCol: colIdx, endCol: colIdx });
+      setSelectionLockedColumn(null);
+      lockSelectionToFieldRef.current = false;
+    }
     setEditingCell({ caseName, field });
     setEditingValue(cases[caseName]?.[field] || '');
   };
@@ -1091,8 +1123,19 @@ export default function Home() {
   };
 
   const handleCellKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      const current = editingCell;
       handleCellBlur();
+      if (current) {
+        const rowIdx = fields.indexOf(current.field);
+        const colIdx = caseOptions.indexOf(current.caseName) + 1;
+        if (rowIdx >= 0 && colIdx >= 1) {
+          const nextRow = e.key === 'Enter' ? Math.min(Math.max(0, rowIdx + (e.shiftKey ? -1 : 1)), fields.length - 1) : rowIdx;
+          const nextCol = e.key === 'Tab' ? Math.min(Math.max(1, colIdx + (e.shiftKey ? -1 : 1)), caseOptions.length) : colIdx;
+          setGridSelection({ startRow: nextRow, endRow: nextRow, startCol: nextCol, endCol: nextCol });
+        }
+      }
     } else if (e.key === 'Escape') {
       setEditingCell(null);
     }
@@ -1111,6 +1154,33 @@ export default function Home() {
       return next;
     });
   }, [caseOptions]);
+
+  const measureTextWidth = (text: string) => {
+    if (typeof document === 'undefined') return text.length * 10;
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return text.length * 10;
+    ctx.font = '14px Inter, system-ui, -apple-system, sans-serif';
+    const metrics = ctx.measureText(text || '');
+    return metrics.width;
+  };
+
+  const autoFitColumnWidth = (key: string) => {
+    const padding = 32;
+    let maxWidth = measureTextWidth(key === '__FIELD__' ? 'Field' : key);
+    if (key === '__FIELD__') {
+      fields.forEach(f => {
+        maxWidth = Math.max(maxWidth, measureTextWidth(f || ''));
+      });
+    } else {
+      fields.forEach(f => {
+        const cellValue = cases[key]?.[f] || '';
+        maxWidth = Math.max(maxWidth, measureTextWidth(cellValue));
+      });
+    }
+    const width = Math.min(MAX_COL_WIDTH, Math.max(MIN_COL_WIDTH, Math.ceil(maxWidth + padding)));
+    setColumnWidths(prev => ({ ...prev, [key]: width }));
+  };
 
   const beginResize = (e: React.MouseEvent, key: string) => {
     e.preventDefault();
@@ -1144,9 +1214,23 @@ export default function Home() {
     if (sel && sel.rangeCount > 0) sel.removeAllRanges();
   };
 
-  const startSelection = (rowIdx: number, colIdx: number) => {
+  const startSelection = (rowIdx: number, colIdx: number, event?: React.MouseEvent) => {
     clearNativeSelection();
     gridContainerRef.current?.focus();
+    const shiftExtend = event?.shiftKey && gridSelection;
+    if (shiftExtend && gridSelection) {
+      const base = normalizeSelection(gridSelection);
+      const lockToField = base.startCol === 0;
+      lockSelectionToFieldRef.current = lockToField;
+      setSelectionLockedColumn(lockToField ? 0 : null);
+      setGridSelection({
+        startRow: base.startRow,
+        startCol: base.startCol,
+        endRow: rowIdx,
+        endCol: lockSelectionToFieldRef.current ? base.startCol : colIdx,
+      });
+      return;
+    }
     setIsSelectingCells(true);
     hasDraggedSelectionRef.current = false;
     lockSelectionToFieldRef.current = colIdx === 0;
@@ -1177,6 +1261,45 @@ export default function Home() {
     window.addEventListener('mouseup', onUp);
     return () => window.removeEventListener('mouseup', onUp);
   }, []);
+
+  const moveSelection = (dRow: number, dCol: number, expand: boolean) => {
+    const maxRow = Math.max(0, fields.length - 1);
+    const maxCol = Math.max(0, caseOptions.length);
+    const anchorRow = gridSelection ? gridSelection.startRow : 0;
+    const anchorCol = gridSelection ? gridSelection.startCol : Math.min(1, maxCol);
+    const currentRow = gridSelection ? (expand ? gridSelection.endRow : anchorRow) : 0;
+    const currentCol = gridSelection ? (expand ? gridSelection.endCol : anchorCol) : Math.min(1, maxCol);
+    const nextRow = Math.min(maxRow, Math.max(0, currentRow + dRow));
+    const nextCol = Math.min(maxCol, Math.max(0, currentCol + dCol));
+    const lockToField = lockSelectionToFieldRef.current || anchorCol === 0;
+    setSelectionLockedColumn(lockToField ? 0 : null);
+    lockSelectionToFieldRef.current = lockToField;
+    if (expand && gridSelection) {
+      setGridSelection({ ...gridSelection, endRow: nextRow, endCol: lockToField ? 0 : nextCol });
+    } else {
+      setGridSelection({ startRow: nextRow, endRow: nextRow, startCol: lockToField ? 0 : nextCol, endCol: lockToField ? 0 : nextCol });
+    }
+  };
+
+  const startEditingFromSelection = (seedValue?: string) => {
+    const defaultCol = Math.min(1, Math.max(0, caseOptions.length));
+    const sel = normalizeSelection(gridSelection ?? { startRow: 0, endRow: 0, startCol: defaultCol, endCol: defaultCol });
+    const targetRow = Math.min(fields.length - 1, sel.startRow);
+    const targetCol = Math.min(caseOptions.length, sel.startCol);
+    setGridSelection({ startRow: targetRow, endRow: targetRow, startCol: targetCol, endCol: targetCol });
+    setSelectionLockedColumn(targetCol === 0 ? 0 : null);
+    lockSelectionToFieldRef.current = targetCol === 0;
+    if (targetCol === 0) {
+      setEditingFieldIndex(targetRow);
+      setEditingFieldName(seedValue ?? fields[targetRow] ?? '');
+      return;
+    }
+    const targetCase = caseOptions[targetCol - 1];
+    const targetField = fields[targetRow];
+    if (!targetCase || !targetField) return;
+    setEditingCell({ caseName: targetCase, field: targetField });
+    setEditingValue(seedValue ?? cases[targetCase]?.[targetField] ?? '');
+  };
 
   const isCellSelected = (rowIdx: number, colIdx: number) => {
     if (!gridSelection) return false;
@@ -1312,7 +1435,7 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-background p-2">
-      <div className="max-w-7xl mx-auto space-y-2">
+      <div className="mx-auto w-full space-y-2">
         <header className="text-center space-y-2">
           <h1 className="text-4xl font-bold">Data Extractor from Table</h1>
           <p className="text-muted-foreground">
@@ -1321,43 +1444,62 @@ export default function Home() {
         </header>
 
         <Card>
-          <CardContent className="p-2">
+          <CardHeader className="py-2 flex items-center justify-between">
+            <CardTitle className="text-base">Image / PDF Paste</CardTitle>
+            <Button variant="ghost" size="sm" onClick={() => setShowUploadPanel(v => !v)}>
+              {showUploadPanel ? 'Hide' : 'Show'}
+            </Button>
+          </CardHeader>
+          {showUploadPanel ? (
+            <CardContent className="p-2">
+              <div
+                ref={dropZoneRef}
+                onDragOver={handleDragOver}
+                onDrop={handleDrop}
+                className="border-2 border-dashed border-primary bg-primary/5 rounded-lg p-2 text-center text-primary hover:bg-primary/10 transition-colors cursor-pointer"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <Upload className="mx-auto h-8 w-12 mb-2" />
+                <p className="font-semibold mb-2">
+                  <strong>Paste</strong> an image here or <strong>drag & drop</strong> an image/PDF.
+                </p>
+                <p className="text-sm text-muted-foreground mb-4">
+                  Upload image or PDF file
+                </p>
+                <Input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*,application/pdf"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) handleFileChange(file);
+                  }}
+                />
+              </div>
+            </CardContent>
+          ) : (
             <div
-              ref={dropZoneRef}
-              onDragOver={handleDragOver}
-              onDrop={handleDrop}
-              className="border-2 border-dashed border-primary bg-primary/5 rounded-lg p-2 text-center text-primary hover:bg-primary/10 transition-colors cursor-pointer"
-              onClick={() => fileInputRef.current?.click()}
+              className="px-4 pb-3 text-xs text-muted-foreground cursor-pointer"
+              onClick={() => setShowUploadPanel(true)}
             >
-              <Upload className="mx-auto h-8 w-12 mb-2" />
-              <p className="font-semibold mb-2">
-                <strong>Paste</strong> an image here or <strong>drag & drop</strong> an image/PDF.
-              </p>
-              <p className="text-sm text-muted-foreground mb-4">
-                Upload image or PDF file
-              </p>
-              <Input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*,application/pdf"
-                className="hidden"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) handleFileChange(file);
-                }}
-              />
+              Click to expand paste/upload area
             </div>
-          </CardContent>
+          )}
         </Card>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <Card>
-            <CardHeader>
+            <CardHeader className="flex items-center justify-between">
               <CardTitle className="flex items-center gap-2">
                 <FileText className="h-5 w-5" />
                 Image Table
               </CardTitle>
+              <Button variant="ghost" size="sm" onClick={() => setShowImagePanel(v => !v)}>
+                {showImagePanel ? 'Hide' : 'Show'}
+              </Button>
             </CardHeader>
+            {showImagePanel ? (
             <CardContent>
               {imageDataUrls.length > 0 ? (
                 <div className="grid grid-cols-1 gap-3 max-h-[480px] overflow-auto">
@@ -1428,12 +1570,18 @@ export default function Home() {
                 </div>
               ) : null}
             </CardContent>
+            ) : null}
+            {!showImagePanel ? (
+              <div className="px-4 pb-3 text-xs text-muted-foreground cursor-pointer" onClick={() => setShowImagePanel(true)}>
+                Click to expand image/PDF preview
+              </div>
+            ) : null}
           </Card>
 
           <Card>
-            <CardHeader>
+            <CardHeader className="flex items-center justify-between">
               <CardTitle>Markdown</CardTitle>
-              <div className="flex gap-2 flex-wrap">
+              <div className="flex gap-2 flex-wrap items-center">
                 <Button
                   onClick={handleConvert}
                   disabled={(imageDataUrls.length === 0 && !dataUrl && !uploadedFile) || isConverting}
@@ -1463,9 +1611,12 @@ export default function Home() {
                   <Download className="h-4 w-4" />
                   Download CSV
                 </Button>
+                <Button variant="ghost" size="sm" onClick={() => setShowMarkdownPanel(v => !v)}>
+                  {showMarkdownPanel ? 'Hide' : 'Show'}
+                </Button>
               </div>
             </CardHeader>
-            <CardContent>
+            <CardContent className={showMarkdownPanel ? undefined : 'hidden'}>
               <Textarea
                 value={markdown}
                 onChange={(e) => setMarkdown(e.target.value)}
@@ -1473,6 +1624,11 @@ export default function Home() {
                 className="h-[400px] overflow-auto resize-y field-sizing-fixed font-mono"
               />
             </CardContent>
+            {!showMarkdownPanel ? (
+              <div className="px-4 pb-3 text-xs text-muted-foreground cursor-pointer" onClick={() => setShowMarkdownPanel(true)}>
+                Click to expand markdown
+              </div>
+            ) : null}
           </Card>
         </div>
 
@@ -1541,6 +1697,7 @@ export default function Home() {
                           <TableHead
                             key={`${field}-horizontal-${idx}`}
                             className="text-left border-gray-300 text-sm font-semibold text-slate-700 min-w-[160px] whitespace-pre-wrap break-words"
+                            onDoubleClick={() => handleFieldNameClick(idx)}
                           >
                             <div className="flex items-center justify-between gap-2">
                               {editingFieldIndex === idx ? (
@@ -1573,29 +1730,37 @@ export default function Home() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {caseOptions.map((caseName) => {
-                      const isActiveCase = selectedCase === caseName;
-                      return (
-                        <TableRow key={`horizontal-${caseName}`} className={`odd:bg-white even:bg-gray-50 hover:bg-blue-50/40 transition-colors ${isActiveCase ? 'bg-primary/5' : ''}`}>
+                {caseOptions.map((caseName) => {
+                  const isActiveCase = selectedCase === caseName;
+                  return (
+                    <TableRow key={`horizontal-${caseName}`} className={`odd:bg-white even:bg-gray-50 hover:bg-blue-50/40 transition-colors ${isActiveCase ? 'bg-primary/5' : ''}`}>
                           <TableCell
                             className="font-semibold text-left border-r border-gray-200 px-2 py-1 uppercase tracking-wide cursor-pointer"
                             onClick={() => { if (selectedCase !== caseName) setSelectedCase(caseName); }}
                           >
                             {caseName}
                           </TableCell>
-                          {fields.map((field, idx) => {
-                            const value = cases[caseName]?.[field] || '';
-                            const isChanged = changedFields[caseName]?.has(field);
-                            const isEditing = editingCell && editingCell.caseName === caseName && editingCell.field === field;
-                            return (
-                              <TableCell
-                                key={`${caseName}-${field}`}
-                                className={`text-left cursor-pointer border-gray-200 px-2 py-1 text-sm min-w-[160px] whitespace-pre-wrap break-words ${idx < fields.length - 1 ? ' border-r' : ''} ${isChanged ? 'bg-yellow-50' : ''}`}
-                                onClick={() => {
-                                  if (!isEditing) handleCellClick(caseName, field);
-                                }}
-                              >
-                                {isEditing ? (
+                        {fields.map((field, idx) => {
+                          const value = cases[caseName]?.[field] || '';
+                          const isChanged = changedFields[caseName]?.has(field);
+                          const isEditing = editingCell && editingCell.caseName === caseName && editingCell.field === field;
+                          const isSelected = isCellSelected(idx, caseOptions.indexOf(caseName) + 1);
+                          return (
+                            <TableCell
+                              key={`${caseName}-${field}`}
+                              className={`text-left cursor-pointer border-gray-200 px-2 py-1 text-sm min-w-[160px] whitespace-pre-wrap break-words ${idx < fields.length - 1 ? ' border-r' : ''} ${isChanged ? 'bg-yellow-50' : ''} ${isSelected ? 'ring-2 ring-primary/60 bg-primary/10' : ''}`}
+                              onMouseDown={(e) => { if (isEditing) return; e.preventDefault(); startSelection(idx, caseOptions.indexOf(caseName) + 1, e); }}
+                              onMouseEnter={() => extendSelection(idx, caseOptions.indexOf(caseName) + 1)}
+                              onClick={() => {
+                                if (hasDraggedSelectionRef.current) {
+                                  hasDraggedSelectionRef.current = false;
+                                  return;
+                                }
+                                // Single click keeps selection; double click edits
+                              }}
+                              onDoubleClick={() => handleCellClick(caseName, field)}
+                            >
+                              {isEditing ? (
                                   <input
                                     type="text"
                                     value={editingValue}
@@ -1632,6 +1797,7 @@ export default function Home() {
                           role="separator"
                           aria-label="Resize Field column"
                           onMouseDown={(e) => beginResize(e, '__FIELD__')}
+                          onDoubleClick={(e) => { e.stopPropagation(); autoFitColumnWidth('__FIELD__'); }}
                           className={`absolute top-0 right-0 h-full w-1 cursor-col-resize ${resizingCol === '__FIELD__' ? 'bg-primary/50' : 'hover:bg-primary/40'}`}
                         />
                       </TableHead>
@@ -1652,6 +1818,7 @@ export default function Home() {
                             role="separator"
                             aria-label={`Resize ${c} column`}
                             onMouseDown={(e) => beginResize(e, c)}
+                            onDoubleClick={(e) => { e.stopPropagation(); autoFitColumnWidth(c); }}
                             className={`absolute top-0 right-0 h-full w-1 cursor-col-resize ${resizingCol === c ? 'bg-primary/50' : 'hover:bg-primary/40'}`}
                           />
                         </TableHead>
@@ -1666,7 +1833,7 @@ export default function Home() {
                           <TableCell
                             className={`font-medium text-left border-r border-gray-200 px-2 py-1 text-sm relative ${fieldSelected ? 'ring-2 ring-primary/60 bg-primary/10' : ''}`}
                             style={{ width: columnWidths['__FIELD__'], minWidth: columnWidths['__FIELD__'] }}
-                            onMouseDown={(e) => { if (editingFieldIndex === rowIdx) return; e.preventDefault(); startSelection(rowIdx, 0); }}
+                            onMouseDown={(e) => { if (editingFieldIndex === rowIdx) return; e.preventDefault(); startSelection(rowIdx, 0, e); }}
                             onMouseEnter={() => extendSelection(rowIdx, 0)}
                           >
                             <div className="flex items-center justify-between gap-2">
@@ -1712,16 +1879,17 @@ export default function Home() {
                                 key={c}
                                 className={`text-left cursor-pointer ${idx < caseOptions.length - 1 ? ' border-r' : ''} border-gray-200 px-2 py-1 text-sm relative ${isSelected ? 'ring-2 ring-primary/60 bg-primary/10' : ''}`}
                                 style={cellStyle}
-                                onMouseDown={(e) => { if (isEditing) return; e.preventDefault(); startSelection(rowIdx, idx + 1); }}
+                                onMouseDown={(e) => { if (isEditing) return; e.preventDefault(); startSelection(rowIdx, idx + 1, e); }}
                                 onMouseEnter={() => extendSelection(rowIdx, idx + 1)}
-                                onClick={() => {
-                                  if (hasDraggedSelectionRef.current) {
-                                    hasDraggedSelectionRef.current = false;
-                                    return;
-                                  }
-                                  if (!isEditing) handleCellClick(c, field);
-                                }}
-                              >
+                              onClick={() => {
+                                if (hasDraggedSelectionRef.current) {
+                                  hasDraggedSelectionRef.current = false;
+                                  return;
+                                }
+                                // Single click keeps selection; double click edits
+                              }}
+                              onDoubleClick={() => handleCellClick(c, field)}
+                            >
                                 {isEditing ? (
                                   <input
                                     type="text"
