@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Upload, Copy, Download, Loader2, FileText, X } from 'lucide-react';
+import { Upload, Copy, Download, Loader2, FileText, X, FileSpreadsheet } from 'lucide-react';
 import { useToast } from '@/components/ui/toast';
 
 interface ExtractedFields {
@@ -114,6 +114,43 @@ export default function Home() {
   const [showUploadPanel, setShowUploadPanel] = useState(true);
   const [showImagePanel, setShowImagePanel] = useState(true);
   const [showMarkdownPanel, setShowMarkdownPanel] = useState(true);
+  const [isImportingExcel, setIsImportingExcel] = useState(false);
+  const excelInputRef = useRef<HTMLInputElement>(null);
+  const [imageZoom, setImageZoom] = useState(1);
+  const [markdownZoom, setMarkdownZoom] = useState(1);
+  const [tableZoom, setTableZoom] = useState(1);
+  const pasteCardRef = useRef<HTMLDivElement>(null);
+  const imageCardRef = useRef<HTMLDivElement>(null);
+  const markdownCardRef = useRef<HTMLDivElement>(null);
+  const tableCardRef = useRef<HTMLDivElement>(null);
+  const TARGET_ROW_WIDTH = 1200; // Align panels horizontally
+  const HALF_ROW_WIDTH = TARGET_ROW_WIDTH / 2;
+  const MIN_PASTE_SIZE = { width: 1000, height: 300 };
+  const MIN_IMAGE_SIZE = { width: 560, height: 380 };
+  const MIN_MARKDOWN_SIZE = { width: 560, height: 380 };
+  const MIN_TABLE_SIZE = { width: 1000, height: 540 };
+  const DEFAULT_PASTE_SIZE = { width: TARGET_ROW_WIDTH, height: 340 };
+  const DEFAULT_IMAGE_SIZE = { width: HALF_ROW_WIDTH, height: 440 };
+  const DEFAULT_MARKDOWN_SIZE = { width: HALF_ROW_WIDTH, height: 440 };
+  const DEFAULT_TABLE_SIZE = { width: TARGET_ROW_WIDTH, height: 620 };
+
+  const clampSize = useCallback((size: { width: number; height: number }, min: { width: number; height: number }) => ({
+    width: Math.max(min.width, size.width),
+    height: Math.max(min.height, size.height),
+  }), []);
+
+  const [pasteSize, setPasteSize] = useState<{ width: number; height: number }>(DEFAULT_PASTE_SIZE);
+  const [imageSize, setImageSize] = useState<{ width: number; height: number }>(DEFAULT_IMAGE_SIZE);
+  const [markdownSize, setMarkdownSize] = useState<{ width: number; height: number }>(DEFAULT_MARKDOWN_SIZE);
+  const [tableSize, setTableSize] = useState<{ width: number; height: number }>(DEFAULT_TABLE_SIZE);
+  const DEFAULT_PASTE_POS = { x: 16, y: 16 };
+  const DEFAULT_IMAGE_POS = { x: 16, y: DEFAULT_PASTE_SIZE.height + 48 };
+  const DEFAULT_MARKDOWN_POS = { x: HALF_ROW_WIDTH + 32, y: DEFAULT_PASTE_SIZE.height + 48 };
+  const DEFAULT_TABLE_POS = { x: 16, y: DEFAULT_PASTE_SIZE.height + Math.max(DEFAULT_IMAGE_SIZE.height, DEFAULT_MARKDOWN_SIZE.height) + 96 };
+  const [pastePos, setPastePos] = useState<{ x: number; y: number }>(DEFAULT_PASTE_POS);
+  const [imagePos, setImagePos] = useState<{ x: number; y: number }>(DEFAULT_IMAGE_POS);
+  const [markdownPos, setMarkdownPos] = useState<{ x: number; y: number }>(DEFAULT_MARKDOWN_POS);
+  const [tablePos, setTablePos] = useState<{ x: number; y: number }>(DEFAULT_TABLE_POS);
 
   const snapshotCurrentState = useCallback((): GridSnapshot => cloneSnapshot({
     fields,
@@ -195,6 +232,10 @@ export default function Home() {
     });
   }, []);
 
+  const handleRemovePdfPage = useCallback((index: number) => {
+    setPdfPageImages(prev => prev.filter((_, i) => i !== index));
+  }, []);
+
   const handleFileChange = useCallback(async (file: File) => {
     if (!file) return;
     if (file.type.startsWith('image/')) {
@@ -209,8 +250,6 @@ export default function Home() {
     } else if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
       setUploadedFile(file);
       setDataUrl(null);
-      setImageDataUrls([]);
-      setPdfPageImages([]);
       setIncludePages('');
       setExcludePages('');
       // Count total pages of the selected PDF
@@ -283,10 +322,99 @@ export default function Home() {
     return Array.from(set).sort((a, b) => a - b);
   }, []);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const loadSize = (key: string, fallback: { width: number; height: number }, min: { width: number; height: number }) => {
+      try {
+        const raw = localStorage.getItem(key);
+        if (!raw) return fallback;
+        const parsed = JSON.parse(raw);
+        if (typeof parsed?.width === 'number' && typeof parsed?.height === 'number') {
+          return clampSize(parsed, min);
+        }
+      } catch (e) {
+        console.warn('Failed to load size', key, e);
+      }
+      return fallback;
+    };
+    const loadPos = (key: string, fallback: { x: number; y: number }) => {
+      try {
+        const raw = localStorage.getItem(key);
+        if (!raw) return fallback;
+        const parsed = JSON.parse(raw);
+        if (typeof parsed?.x === 'number' && typeof parsed?.y === 'number') {
+          return { x: Math.max(0, parsed.x), y: Math.max(0, parsed.y) };
+        }
+      } catch (e) {
+        console.warn('Failed to load position', key, e);
+      }
+      return fallback;
+    };
+    setPasteSize(loadSize('panel:paste', DEFAULT_PASTE_SIZE, MIN_PASTE_SIZE));
+    setImageSize(loadSize('panel:image', DEFAULT_IMAGE_SIZE, MIN_IMAGE_SIZE));
+    setMarkdownSize(loadSize('panel:markdown', DEFAULT_MARKDOWN_SIZE, MIN_MARKDOWN_SIZE));
+    setTableSize(loadSize('panel:table', DEFAULT_TABLE_SIZE, MIN_TABLE_SIZE));
+    setPastePos(loadPos('panelpos:paste', DEFAULT_PASTE_POS));
+    setImagePos(loadPos('panelpos:image', DEFAULT_IMAGE_POS));
+    setMarkdownPos(loadPos('panelpos:markdown', DEFAULT_MARKDOWN_POS));
+    setTablePos(loadPos('panelpos:table', DEFAULT_TABLE_POS));
+  }, [clampSize]);
+
+  const persistSize = useCallback((key: string, size: { width: number; height: number }) => {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.setItem(key, JSON.stringify(size));
+    } catch (e) {
+      console.warn('Failed to persist size', key, e);
+    }
+  }, []);
+
+  useEffect(() => { persistSize('panel:paste', pasteSize); }, [pasteSize, persistSize]);
+  useEffect(() => { persistSize('panel:image', imageSize); }, [imageSize, persistSize]);
+  useEffect(() => { persistSize('panel:markdown', markdownSize); }, [markdownSize, persistSize]);
+  useEffect(() => { persistSize('panel:table', tableSize); }, [tableSize, persistSize]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try { localStorage.setItem('panelpos:paste', JSON.stringify(pastePos)); } catch (e) { console.warn('pos save failed', e); }
+  }, [pastePos]);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try { localStorage.setItem('panelpos:image', JSON.stringify(imagePos)); } catch (e) { console.warn('pos save failed', e); }
+  }, [imagePos]);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try { localStorage.setItem('panelpos:markdown', JSON.stringify(markdownPos)); } catch (e) { console.warn('pos save failed', e); }
+  }, [markdownPos]);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try { localStorage.setItem('panelpos:table', JSON.stringify(tablePos)); } catch (e) { console.warn('pos save failed', e); }
+  }, [tablePos]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof ResizeObserver === 'undefined') return;
+    const observers: ResizeObserver[] = [];
+    const register = (ref: React.RefObject<HTMLDivElement>, setter: (v: { width: number; height: number }) => void, minSize: { width: number; height: number }) => {
+      if (!ref.current) return;
+      const obs = new ResizeObserver((entries) => {
+        const entry = entries[0];
+        if (!entry?.contentRect) return;
+        const { width, height } = entry.contentRect;
+        setter(clampSize({ width, height }, minSize));
+      });
+      obs.observe(ref.current);
+      observers.push(obs);
+    };
+    register(pasteCardRef, setPasteSize, MIN_PASTE_SIZE);
+    register(imageCardRef, setImageSize, MIN_IMAGE_SIZE);
+    register(markdownCardRef, setMarkdownSize, MIN_MARKDOWN_SIZE);
+    register(tableCardRef, setTableSize, MIN_TABLE_SIZE);
+    return () => observers.forEach(o => o.disconnect());
+  }, [clampSize]);
+
   const handleRenderPdfPreview = useCallback(async () => {
     if (!uploadedFile) return;
     setIsRenderingPdf(true);
-    setPdfPageImages([]);
     try {
       const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
       await import('pdfjs-dist/legacy/build/pdf.worker.mjs');
@@ -328,7 +456,7 @@ export default function Home() {
         const url = canvas.toDataURL('image/png');
         results.push({ page: p, url });
       }
-      setPdfPageImages(results);
+      setPdfPageImages(prev => [...prev, ...results]);
       if (selected.length > MAX_PREVIEW) {
         addToast({
           title: '미리보기 제한',
@@ -358,6 +486,181 @@ export default function Home() {
     const file = e.dataTransfer?.files?.[0];
     if (file) await handleFileChange(file);
   }, [handleFileChange]);
+
+  const extractDenseTable = (matrix: any[][]) => {
+    let minRow = Infinity, minCol = Infinity, maxRow = -1, maxCol = -1;
+    matrix.forEach((row, rIdx) => {
+      if (!Array.isArray(row)) return;
+      row.forEach((cell, cIdx) => {
+        const val = cell == null ? '' : String(cell).trim();
+        if (val !== '') {
+          minRow = Math.min(minRow, rIdx);
+          maxRow = Math.max(maxRow, rIdx);
+          minCol = Math.min(minCol, cIdx);
+          maxCol = Math.max(maxCol, cIdx);
+        }
+      });
+    });
+    if (maxRow === -1 || maxCol === -1) return null;
+    const table: string[][] = [];
+    for (let r = minRow; r <= maxRow; r++) {
+      const src = matrix[r] || [];
+      const row: string[] = [];
+      for (let c = minCol; c <= maxCol; c++) {
+        const cell = src[c];
+        row.push(cell == null ? '' : String(cell).trim());
+      }
+      table.push(row);
+    }
+    return table;
+  };
+
+  const decodeCsvText = (buffer: ArrayBuffer) => {
+    const candidates = ['utf-8', 'euc-kr', 'cp949', 'iso-8859-1'];
+    const bytes = new Uint8Array(buffer);
+    let best = { text: '', replacements: Number.POSITIVE_INFINITY };
+    candidates.forEach(enc => {
+      try {
+        const dec = new TextDecoder(enc as any, { fatal: false });
+        const text = dec.decode(bytes);
+        const replacements = (text.match(/\uFFFD/g) || []).length;
+        if (replacements < best.replacements) {
+          best = { text, replacements };
+        }
+      } catch (_e) {
+        // ignore unsupported encoding
+      }
+    });
+    if (best.replacements === Number.POSITIVE_INFINITY) {
+      const utf8 = new TextDecoder('utf-8').decode(bytes);
+      return utf8;
+    }
+    return best.text;
+  };
+
+  const handleExcelImport = useCallback(async (file: File) => {
+    if (!file) return;
+    const isExcel = /\.(xlsx|xls|csv)$/i.test(file.name);
+    if (!isExcel) {
+      addToast({
+        title: '엑셀 파일만 지원',
+        description: 'xlsx, xls, csv 파일을 선택해주세요.',
+        type: 'error'
+      });
+      return;
+    }
+    setIsImportingExcel(true);
+    try {
+      const XLSX = await import('xlsx');
+      const buffer = await file.arrayBuffer();
+      const isCsv = /\.csv$/i.test(file.name);
+      const workbook = isCsv
+        ? XLSX.read(decodeCsvText(buffer), { type: 'string' })
+        : XLSX.read(buffer, { type: 'array' });
+      const sheetName = workbook.SheetNames?.[0];
+      if (!sheetName) {
+        throw new Error('시트를 찾을 수 없습니다.');
+      }
+      const sheet = workbook.Sheets[sheetName];
+      const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false }) as any[][];
+      const dense = extractDenseTable(matrix);
+      if (!dense || dense.length < 2 || dense[0].length < 2) {
+        throw new Error('표 형태의 데이터를 찾지 못했습니다. 첫 행은 케이스 이름, 첫 열은 필드명이어야 합니다.');
+      }
+      const header = dense[0] || [];
+      const rawCaseNames = header.slice(1);
+      const seen = new Set<string>();
+      const caseNames = rawCaseNames.map((name, idx) => {
+        const base = (name == null ? '' : String(name).trim()) || `case${idx + 1}`;
+        let candidate = base;
+        let suffix = 1;
+        while (seen.has(candidate)) {
+          candidate = `${base} (${suffix++})`;
+        }
+        seen.add(candidate);
+        return candidate;
+      });
+      if (!caseNames.length) {
+        caseNames.push('case1');
+      }
+      const body = dense.slice(1);
+      const nextFields: string[] = [];
+      const nextCases: { [caseName: string]: ExtractedFields | null } = {};
+      caseNames.forEach(c => { nextCases[c] = {}; });
+
+      body.forEach(row => {
+        const rawField = row?.[0] == null ? '' : String(row[0]).trim();
+        if (!rawField) return;
+        let fieldName = rawField;
+        let suffix = 1;
+        while (nextFields.includes(fieldName)) {
+          fieldName = `${rawField} (${suffix++})`;
+        }
+        nextFields.push(fieldName);
+        caseNames.forEach((c, idx) => {
+          const cell = row[idx + 1];
+          const val = cell == null ? '' : String(cell).trim();
+          if (val) {
+            const data = nextCases[c] || {};
+            data[fieldName] = val;
+            nextCases[c] = data;
+          }
+        });
+      });
+
+      if (!nextFields.length) {
+        throw new Error('필드 열이 비어 있습니다. 엑셀의 첫 번째 열에 필드명을 입력해주세요.');
+      }
+
+      pushHistory();
+      setFields(nextFields);
+      setCases(nextCases);
+      setCaseOptions(caseNames);
+      setSelectedCase(caseNames[0]);
+      setChangedFields(() => {
+        const result: { [caseName: string]: Set<string> } = {};
+        caseNames.forEach(c => { result[c] = new Set(nextFields); });
+        return result;
+      });
+      setDeletedFields([]);
+      setFieldAliases({});
+      setGridSelection(null);
+      setSelectionLockedColumn(null);
+      lockSelectionToFieldRef.current = false;
+
+      addToast({
+        title: 'Excel 로딩 완료',
+        description: `${file.name}에서 ${nextFields.length}개 필드와 ${caseNames.length}개 케이스를 불러왔습니다.`,
+        type: 'success'
+      });
+    } catch (err: any) {
+      console.error('Excel import failed:', err);
+      addToast({
+        title: 'Excel 로딩 실패',
+        description: err?.message || '엑셀 파일을 불러오지 못했습니다.',
+        type: 'error'
+      });
+    } finally {
+      setIsImportingExcel(false);
+    }
+  }, [addToast, pushHistory]);
+
+  const handleExcelFileInput = useCallback(async (file: File | null) => {
+    if (!file) return;
+    await handleExcelImport(file);
+    if (excelInputRef.current) {
+      excelInputRef.current.value = '';
+    }
+  }, [handleExcelImport]);
+
+  const handleExcelDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    const file = e.dataTransfer?.files?.[0];
+    if (!file) return;
+    if (/\.(xlsx|xls|csv)$/i.test(file.name)) {
+      await handleExcelImport(file);
+    }
+  }, [handleExcelImport]);
 
   const handleConvert = async () => {
     if (imageDataUrls.length === 0 && !dataUrl && !uploadedFile) return;
@@ -1214,6 +1517,28 @@ export default function Home() {
     if (sel && sel.rangeCount > 0) sel.removeAllRanges();
   };
 
+  const draggingRef = useRef<{ key: string; startX: number; startY: number; originX: number; originY: number } | null>(null);
+  const startDragging = (key: string, pos: { x: number; y: number }, setter: (p: { x: number; y: number }) => void) => (e: React.MouseEvent) => {
+    const target = e.target as HTMLElement;
+    if (target && target.closest('button, input, select, textarea, option')) return;
+    if (e.button !== 0) return;
+    e.preventDefault();
+    draggingRef.current = { key, startX: e.clientX, startY: e.clientY, originX: pos.x, originY: pos.y };
+    const onMove = (ev: MouseEvent) => {
+      if (!draggingRef.current) return;
+      const dx = ev.clientX - draggingRef.current.startX;
+      const dy = ev.clientY - draggingRef.current.startY;
+      setter({ x: Math.max(0, draggingRef.current.originX + dx), y: Math.max(0, draggingRef.current.originY + dy) });
+    };
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      draggingRef.current = null;
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+
   const startSelection = (rowIdx: number, colIdx: number, event?: React.MouseEvent) => {
     clearNativeSelection();
     gridContainerRef.current?.focus();
@@ -1435,7 +1760,7 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-background p-2">
-      <div className="mx-auto w-full space-y-2">
+      <div className="mx-auto w-full space-y-2 relative" style={{ minHeight: `${Math.max(tablePos.y + tableSize.height + 160, 1400)}px` }}>
         <header className="text-center space-y-2">
           <h1 className="text-4xl font-bold">Data Extractor from Table</h1>
           <p className="text-muted-foreground">
@@ -1443,8 +1768,22 @@ export default function Home() {
           </p>
         </header>
 
-        <Card>
-          <CardHeader className="py-2 flex items-center justify-between">
+        <div
+          className="absolute"
+          style={{ left: pastePos.x, top: pastePos.y, width: pasteSize.width, height: pasteSize.height }}
+        >
+          <Card
+            ref={pasteCardRef}
+            style={{
+              resize: 'both',
+              overflow: 'auto',
+              minWidth: `${MIN_PASTE_SIZE.width}px`,
+              minHeight: `${MIN_PASTE_SIZE.height}px`,
+              width: '100%',
+              height: '100%'
+            }}
+          >
+          <CardHeader className="py-2 flex items-center justify-between cursor-move" onMouseDown={startDragging('paste', pastePos, setPastePos)}>
             <CardTitle className="text-base">Image / PDF Paste</CardTitle>
             <Button variant="ghost" size="sm" onClick={() => setShowUploadPanel(v => !v)}>
               {showUploadPanel ? 'Hide' : 'Show'}
@@ -1486,11 +1825,25 @@ export default function Home() {
               Click to expand paste/upload area
             </div>
           )}
-        </Card>
+          </Card>
+        </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <Card>
-            <CardHeader className="flex items-center justify-between">
+        <div
+          className="absolute"
+          style={{ left: imagePos.x, top: imagePos.y, width: imageSize.width, height: imageSize.height }}
+        >
+          <Card
+            ref={imageCardRef}
+            style={{
+              resize: 'both',
+              overflow: 'auto',
+              minWidth: `${MIN_IMAGE_SIZE.width}px`,
+              minHeight: `${MIN_IMAGE_SIZE.height}px`,
+              width: '100%',
+              height: '100%'
+            }}
+          >
+            <CardHeader className="flex items-center justify-between cursor-move" onMouseDown={startDragging('image', imagePos, setImagePos)}>
               <CardTitle className="flex items-center gap-2">
                 <FileText className="h-5 w-5" />
                 Image Table
@@ -1499,45 +1852,33 @@ export default function Home() {
                 {showImagePanel ? 'Hide' : 'Show'}
               </Button>
             </CardHeader>
+
             {showImagePanel ? (
-            <CardContent>
-              {imageDataUrls.length > 0 ? (
-                <div className="grid grid-cols-1 gap-3 max-h-[480px] overflow-auto">
-                  {imageDataUrls.map((u, idx) => (
-                    <div key={idx} className="space-y-1">
-                      <div className="text-xs text-muted-foreground">Image {idx + 1}</div>
-                      <div className="relative">
-                        <img src={u} alt={`pasted-${idx+1}`} className="w-full h-auto rounded border" />
-                        <button
-                          type="button"
-                          aria-label={`이미지 ${idx + 1} 삭제`}
-                          onClick={(e) => { e.stopPropagation(); handleRemoveImage(idx); }}
-                          className="absolute top-1 right-1 inline-flex items-center justify-center rounded-full bg-black/60 hover:bg-black/80 text-white shadow p-1"
-                          title="이미지 삭제"
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : dataUrl ? (
-                <img
-                  src={dataUrl}
-                  alt="preview"
-                  className="w-full h-auto rounded-lg border"
+            <CardContent className="space-y-2">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span className="font-semibold">Zoom</span>
+                <input
+                  type="range"
+                  min={0.5}
+                  max={2}
+                  step={0.05}
+                  value={imageZoom}
+                  onChange={e => setImageZoom(parseFloat(e.target.value))}
                 />
-              ) : uploadedFile ? (
-                <div className="text-sm text-muted-foreground border rounded p-2 space-y-2">
-                  <div>PDF selected: {uploadedFile.name}{pdfTotalPages ? ` · 총 페이지: ${pdfTotalPages}` : ''}</div>
+                <span className="w-12 text-right">{Math.round(imageZoom * 100)}%</span>
+              </div>
+              <div style={{ transform: `scale(${imageZoom})`, transformOrigin: 'top left' }}>
+              {uploadedFile ? (
+                <div className="text-sm text-muted-foreground border rounded p-2 space-y-2 mb-3">
+                  <div>PDF selected: {uploadedFile.name}{pdfTotalPages ? ` ? ? ???: ${pdfTotalPages}` : ''}</div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                     <Input
-                      placeholder="포함할 페이지 (예: 1-5,7,9)"
+                      placeholder="??? ??? (?: 1-5,7,9)"
                       value={includePages}
                       onChange={(e) => setIncludePages(e.target.value)}
                     />
                     <Input
-                      placeholder="제외할 페이지 (예: 2,6)"
+                      placeholder="??? ??? (?: 2,6)"
                       value={excludePages}
                       onChange={(e) => setExcludePages(e.target.value)}
                     />
@@ -1545,30 +1886,68 @@ export default function Home() {
                   <div className="flex gap-2 items-center">
                     <Button size="sm" onClick={handleRenderPdfPreview} disabled={isRenderingPdf}>
                       {isRenderingPdf ? (
-                        <><Loader2 className="h-4 w-4 animate-spin" /> 렌더링...</>
+                        <><Loader2 className="h-4 w-4 animate-spin" /> ???...</>
                       ) : (
-                        '미리보기 생성'
+                        '???? ??'
                       )}
                     </Button>
                     {pdfPageImages.length > 0 ? (
-                      <span className="text-xs">미리보기 {pdfPageImages.length}개</span>
+                      <span className="text-xs">???? {pdfPageImages.length}?</span>
                     ) : null}
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    비워두면 전체 페이지를 변환합니다. 범위는 쉼표로 구분하고 대시는 범위를 의미합니다.
+                    ??? ?? ????, ??? ???? ???? ?????.
                   </p>
-                  {pdfPageImages.length > 0 ? (
-                    <div className="grid grid-cols-1 gap-3 max-h-[480px] overflow-auto">
-                      {pdfPageImages.map(img => (
-                        <div key={img.page} className="space-y-1">
-                          <div className="text-xs text-muted-foreground">Page {img.page}</div>
-                          <img src={img.url} alt={`Page ${img.page}`} className="w-full h-auto rounded border" />
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
                 </div>
               ) : null}
+
+              {(() => {
+                const allPages = [
+                  ...imageDataUrls.map((u, idx) => ({
+                    key: `img-${idx}`,
+                    label: `Image ${idx + 1}`,
+                    url: u,
+                    onRemove: () => handleRemoveImage(idx),
+                  })),
+                  ...pdfPageImages.map((img, idx) => ({
+                    key: `pdf-${idx}-${img.page}`,
+                    label: `PDF Page ${img.page}`,
+                    url: img.url,
+                    onRemove: () => handleRemovePdfPage(idx),
+                  }))
+                ];
+                if (allPages.length === 0 && dataUrl) {
+                  allPages.push({
+                    key: 'single',
+                    label: 'Image 1',
+                    url: dataUrl,
+                    onRemove: () => setDataUrl(null),
+                  });
+                }
+                if (allPages.length === 0) return null;
+                return (
+                  <div className="grid grid-cols-1 gap-3 max-h-[520px] overflow-auto">
+                    {allPages.map((p) => (
+                      <div key={p.key} className="space-y-1">
+                        <div className="text-xs text-muted-foreground">{p.label}</div>
+                        <div className="relative">
+                          <img src={p.url} alt={p.label} className="w-full h-auto rounded border" />
+                          <button
+                            type="button"
+                            aria-label={`${p.label} ??`}
+                            onClick={(e) => { e.stopPropagation(); p.onRemove(); }}
+                            className="absolute top-1 right-1 inline-flex items-center justify-center rounded-full bg-black/70 hover:bg-black/85 text-white shadow p-1"
+                            title={`${p.label} ??`}
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+              </div>
             </CardContent>
             ) : null}
             {!showImagePanel ? (
@@ -1577,11 +1956,38 @@ export default function Home() {
               </div>
             ) : null}
           </Card>
+        </div>
 
-          <Card>
-            <CardHeader className="flex items-center justify-between">
+        <div
+          className="absolute"
+          style={{ left: markdownPos.x, top: markdownPos.y, width: markdownSize.width, height: markdownSize.height }}
+        >
+          <Card
+            ref={markdownCardRef}
+            style={{
+              resize: 'both',
+              overflow: 'auto',
+              minWidth: `${MIN_MARKDOWN_SIZE.width}px`,
+              minHeight: `${MIN_MARKDOWN_SIZE.height}px`,
+              width: '100%',
+              height: '100%'
+            }}
+          >
+            <CardHeader className="flex items-center justify-between cursor-move" onMouseDown={startDragging('markdown', markdownPos, setMarkdownPos)}>
               <CardTitle>Markdown</CardTitle>
               <div className="flex gap-2 flex-wrap items-center">
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span className="font-semibold">Zoom</span>
+                  <input
+                    type="range"
+                    min={0.5}
+                    max={2}
+                    step={0.05}
+                    value={markdownZoom}
+                    onChange={(e) => setMarkdownZoom(parseFloat(e.target.value))}
+                  />
+                  <span className="w-12 text-right">{Math.round(markdownZoom * 100)}%</span>
+                </div>
                 <Button
                   onClick={handleConvert}
                   disabled={(imageDataUrls.length === 0 && !dataUrl && !uploadedFile) || isConverting}
@@ -1617,12 +2023,14 @@ export default function Home() {
               </div>
             </CardHeader>
             <CardContent className={showMarkdownPanel ? undefined : 'hidden'}>
-              <Textarea
-                value={markdown}
-                onChange={(e) => setMarkdown(e.target.value)}
-                placeholder="Markdown will appear here..."
-                className="h-[400px] overflow-auto resize-y field-sizing-fixed font-mono"
-              />
+              <div style={{ transform: `scale(${markdownZoom})`, transformOrigin: 'top left' }}>
+                <Textarea
+                  value={markdown}
+                  onChange={(e) => setMarkdown(e.target.value)}
+                  placeholder="Markdown will appear here..."
+                  className="h-[400px] overflow-auto resize-y field-sizing-fixed font-mono"
+                />
+              </div>
             </CardContent>
             {!showMarkdownPanel ? (
               <div className="px-4 pb-3 text-xs text-muted-foreground cursor-pointer" onClick={() => setShowMarkdownPanel(true)}>
@@ -1632,13 +2040,39 @@ export default function Home() {
           </Card>
         </div>
 
-        <Card>
-          <CardHeader>
+        <div
+          className="absolute"
+          style={{ left: tablePos.x, top: tablePos.y, width: tableSize.width, height: tableSize.height }}
+        >
+          <Card
+            ref={tableCardRef}
+            style={{
+              resize: 'both',
+              overflow: 'auto',
+              minWidth: `${MIN_TABLE_SIZE.width}px`,
+              minHeight: `${MIN_TABLE_SIZE.height}px`,
+              width: '100%',
+              height: '100%'
+            }}
+          >
+          <CardHeader className="cursor-move" onMouseDown={startDragging('table', tablePos, setTablePos)}>
             <CardTitle>
               Technical Evaluation Sheet
             </CardTitle>
             <div className="flex flex-wrap gap-2 mt-4">
               <div className="flex gap-2 flex-wrap items-center">
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span className="font-semibold">Zoom</span>
+                  <input
+                    type="range"
+                    min={0.5}
+                    max={1.6}
+                    step={0.05}
+                    value={tableZoom}
+                    onChange={(e) => setTableZoom(parseFloat(e.target.value))}
+                  />
+                  <span className="w-12 text-right">{Math.round(tableZoom * 100)}%</span>
+                </div>
                 <select
                   id="case-select"
                   value={selectedCase}
@@ -1654,6 +2088,23 @@ export default function Home() {
                 <Button variant="outline" onClick={handleAddCase}>Add Case</Button>
                 <Button variant="outline" onClick={handleRemoveCase} disabled={caseOptions.length <= 1}>Remove Case</Button>
                 <Button variant="outline" onClick={handleAddField}>Add Field</Button>
+                <Button
+                  variant="outline"
+                  onClick={() => excelInputRef.current?.click()}
+                  disabled={isImportingExcel}
+                  className="flex items-center gap-2"
+                  title="엑셀 파일을 불러오기"
+                >
+                  {isImportingExcel ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileSpreadsheet className="h-4 w-4" />}
+                  Load Excel
+                </Button>
+                <Input
+                  ref={excelInputRef}
+                  type="file"
+                  accept=".xlsx,.xls,.csv"
+                  className="hidden"
+                  onChange={(e) => handleExcelFileInput(e.target.files?.[0] || null)}
+                />
                 <Button variant="outline" onClick={() => setIsHorizontalView(prev => !prev)}>
                   Tilting ({isHorizontalView ? 'Vertical' : 'Horizontal'})
                 </Button>
@@ -1680,14 +2131,41 @@ export default function Home() {
           </CardHeader>
           <CardContent>
             <div
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={handleExcelDrop}
+              className="mb-3 rounded-md border-2 border-dashed border-primary/40 bg-primary/5 p-3"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="text-sm text-muted-foreground">
+                  Excel 테이블을 드롭하거나 업로드하면 Technical Evaluation Sheet에 그대로 채웁니다. 첫 열은 Field, 첫 행은 Case 이름으로 사용됩니다. CSV는 한글이 깨지면 EUC-KR/CP949까지 자동으로 시도합니다.
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => excelInputRef.current?.click()}
+                    disabled={isImportingExcel}
+                    className="flex items-center gap-2"
+                  >
+                    {isImportingExcel ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                    {isImportingExcel ? 'Loading...' : 'Upload Excel'}
+                  </Button>
+                </div>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                표를 찾을 수 없을 때는 첫 행/열에 값이 있는지 확인해주세요. 동일한 필드명이 여러 번 나오면 자동으로 번호를 붙입니다.
+              </p>
+            </div>
+            <div
               ref={gridContainerRef}
               tabIndex={0}
               onKeyDown={handleGridKeyDown}
               className="rounded-md border border-gray-300 shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/40 bg-white overflow-hidden"
+              style={{ transform: `scale(${tableZoom})`, transformOrigin: 'top left' }}
             >
               {isHorizontalView ? (
                 <div className="overflow-auto">
-                  <Table className="w-full min-w-[900px]">
+                  <Table className="w-full min-w-[900px] border-collapse">
                     <TableHeader>
                       <TableRow className="bg-gradient-to-b from-gray-50 to-gray-100">
                         <TableHead className="text-left border-r border-gray-300 select-none text-sm font-semibold text-slate-700 w-32 min-w-[120px] uppercase tracking-wide">
@@ -1785,7 +2263,7 @@ export default function Home() {
                   </Table>
                 </div>
               ) : (
-                <Table className="table-fixed w-full">
+                <Table className="table-fixed w-full border-collapse">
                   <TableHeader>
                     <TableRow className="bg-gradient-to-b from-gray-50 to-gray-100">
                       <TableHead
@@ -1918,6 +2396,7 @@ export default function Home() {
           </CardContent>
         </Card>
       </div>
+        </div>
     </div>
   );
 }
