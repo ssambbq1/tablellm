@@ -20,7 +20,7 @@
     "dotenv": "^17.2.3",
     "lucide-react": "^0.544.0",
     "multer": "^2.0.2",
-    "next": "15.5.4",
+    "next": "15.5.7",
     "pdfjs-dist": "^5.4.296",
     "react": "19.1.0",
     "react-dom": "19.1.0",
