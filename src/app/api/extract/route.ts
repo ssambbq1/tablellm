@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import OpenAI from 'openai';
 
-// 기본 필드 (클라이언트가 안 보내면 이 목록 사용)
+// 기본 필드! (클라이언트가 안 보내면 이 목록 사용)
 const DEFAULT_FIELDS = [
   'manufacturer',
   'pump model name',
