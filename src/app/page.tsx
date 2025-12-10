@@ -394,7 +394,7 @@ export default function Home() {
   useEffect(() => {
     if (typeof window === 'undefined' || typeof ResizeObserver === 'undefined') return;
     const observers: ResizeObserver[] = [];
-    const register = (ref: React.RefObject<HTMLDivElement>, setter: (v: { width: number; height: number }) => void, minSize: { width: number; height: number }) => {
+    const register = (ref: React.RefObject<HTMLDivElement | null>, setter: (v: { width: number; height: number }) => void, minSize: { width: number; height: number }) => {
       if (!ref.current) return;
       const obs = new ResizeObserver((entries) => {
         const entry = entries[0];
