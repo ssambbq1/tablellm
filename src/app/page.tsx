@@ -116,41 +116,6 @@ export default function Home() {
   const [showMarkdownPanel, setShowMarkdownPanel] = useState(true);
   const [isImportingExcel, setIsImportingExcel] = useState(false);
   const excelInputRef = useRef<HTMLInputElement>(null);
-  const [imageZoom, setImageZoom] = useState(1);
-  const [markdownZoom, setMarkdownZoom] = useState(1);
-  const [tableZoom, setTableZoom] = useState(1);
-  const pasteCardRef = useRef<HTMLDivElement>(null);
-  const imageCardRef = useRef<HTMLDivElement>(null);
-  const markdownCardRef = useRef<HTMLDivElement>(null);
-  const tableCardRef = useRef<HTMLDivElement>(null);
-  const TARGET_ROW_WIDTH = 1200; // Align panels horizontally
-  const HALF_ROW_WIDTH = TARGET_ROW_WIDTH / 2;
-  const MIN_PASTE_SIZE = { width: 1000, height: 300 };
-  const MIN_IMAGE_SIZE = { width: 560, height: 380 };
-  const MIN_MARKDOWN_SIZE = { width: 560, height: 380 };
-  const MIN_TABLE_SIZE = { width: 1000, height: 540 };
-  const DEFAULT_PASTE_SIZE = { width: TARGET_ROW_WIDTH, height: 340 };
-  const DEFAULT_IMAGE_SIZE = { width: HALF_ROW_WIDTH, height: 440 };
-  const DEFAULT_MARKDOWN_SIZE = { width: HALF_ROW_WIDTH, height: 440 };
-  const DEFAULT_TABLE_SIZE = { width: TARGET_ROW_WIDTH, height: 620 };
-
-  const clampSize = useCallback((size: { width: number; height: number }, min: { width: number; height: number }) => ({
-    width: Math.max(min.width, size.width),
-    height: Math.max(min.height, size.height),
-  }), []);
-
-  const [pasteSize, setPasteSize] = useState<{ width: number; height: number }>(DEFAULT_PASTE_SIZE);
-  const [imageSize, setImageSize] = useState<{ width: number; height: number }>(DEFAULT_IMAGE_SIZE);
-  const [markdownSize, setMarkdownSize] = useState<{ width: number; height: number }>(DEFAULT_MARKDOWN_SIZE);
-  const [tableSize, setTableSize] = useState<{ width: number; height: number }>(DEFAULT_TABLE_SIZE);
-  const DEFAULT_PASTE_POS = { x: 16, y: 16 };
-  const DEFAULT_IMAGE_POS = { x: 16, y: DEFAULT_PASTE_SIZE.height + 48 };
-  const DEFAULT_MARKDOWN_POS = { x: HALF_ROW_WIDTH + 32, y: DEFAULT_PASTE_SIZE.height + 48 };
-  const DEFAULT_TABLE_POS = { x: 16, y: DEFAULT_PASTE_SIZE.height + Math.max(DEFAULT_IMAGE_SIZE.height, DEFAULT_MARKDOWN_SIZE.height) + 96 };
-  const [pastePos, setPastePos] = useState<{ x: number; y: number }>(DEFAULT_PASTE_POS);
-  const [imagePos, setImagePos] = useState<{ x: number; y: number }>(DEFAULT_IMAGE_POS);
-  const [markdownPos, setMarkdownPos] = useState<{ x: number; y: number }>(DEFAULT_MARKDOWN_POS);
-  const [tablePos, setTablePos] = useState<{ x: number; y: number }>(DEFAULT_TABLE_POS);
 
   const snapshotCurrentState = useCallback((): GridSnapshot => cloneSnapshot({
     fields,
@@ -321,96 +286,6 @@ export default function Home() {
     });
     return Array.from(set).sort((a, b) => a - b);
   }, []);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const loadSize = (key: string, fallback: { width: number; height: number }, min: { width: number; height: number }) => {
-      try {
-        const raw = localStorage.getItem(key);
-        if (!raw) return fallback;
-        const parsed = JSON.parse(raw);
-        if (typeof parsed?.width === 'number' && typeof parsed?.height === 'number') {
-          return clampSize(parsed, min);
-        }
-      } catch (e) {
-        console.warn('Failed to load size', key, e);
-      }
-      return fallback;
-    };
-    const loadPos = (key: string, fallback: { x: number; y: number }) => {
-      try {
-        const raw = localStorage.getItem(key);
-        if (!raw) return fallback;
-        const parsed = JSON.parse(raw);
-        if (typeof parsed?.x === 'number' && typeof parsed?.y === 'number') {
-          return { x: Math.max(0, parsed.x), y: Math.max(0, parsed.y) };
-        }
-      } catch (e) {
-        console.warn('Failed to load position', key, e);
-      }
-      return fallback;
-    };
-    setPasteSize(loadSize('panel:paste', DEFAULT_PASTE_SIZE, MIN_PASTE_SIZE));
-    setImageSize(loadSize('panel:image', DEFAULT_IMAGE_SIZE, MIN_IMAGE_SIZE));
-    setMarkdownSize(loadSize('panel:markdown', DEFAULT_MARKDOWN_SIZE, MIN_MARKDOWN_SIZE));
-    setTableSize(loadSize('panel:table', DEFAULT_TABLE_SIZE, MIN_TABLE_SIZE));
-    setPastePos(loadPos('panelpos:paste', DEFAULT_PASTE_POS));
-    setImagePos(loadPos('panelpos:image', DEFAULT_IMAGE_POS));
-    setMarkdownPos(loadPos('panelpos:markdown', DEFAULT_MARKDOWN_POS));
-    setTablePos(loadPos('panelpos:table', DEFAULT_TABLE_POS));
-  }, [clampSize]);
-
-  const persistSize = useCallback((key: string, size: { width: number; height: number }) => {
-    if (typeof window === 'undefined') return;
-    try {
-      localStorage.setItem(key, JSON.stringify(size));
-    } catch (e) {
-      console.warn('Failed to persist size', key, e);
-    }
-  }, []);
-
-  useEffect(() => { persistSize('panel:paste', pasteSize); }, [pasteSize, persistSize]);
-  useEffect(() => { persistSize('panel:image', imageSize); }, [imageSize, persistSize]);
-  useEffect(() => { persistSize('panel:markdown', markdownSize); }, [markdownSize, persistSize]);
-  useEffect(() => { persistSize('panel:table', tableSize); }, [tableSize, persistSize]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try { localStorage.setItem('panelpos:paste', JSON.stringify(pastePos)); } catch (e) { console.warn('pos save failed', e); }
-  }, [pastePos]);
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try { localStorage.setItem('panelpos:image', JSON.stringify(imagePos)); } catch (e) { console.warn('pos save failed', e); }
-  }, [imagePos]);
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try { localStorage.setItem('panelpos:markdown', JSON.stringify(markdownPos)); } catch (e) { console.warn('pos save failed', e); }
-  }, [markdownPos]);
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try { localStorage.setItem('panelpos:table', JSON.stringify(tablePos)); } catch (e) { console.warn('pos save failed', e); }
-  }, [tablePos]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined' || typeof ResizeObserver === 'undefined') return;
-    const observers: ResizeObserver[] = [];
-    const register = (ref: React.RefObject<HTMLDivElement | null>, setter: (v: { width: number; height: number }) => void, minSize: { width: number; height: number }) => {
-      if (!ref.current) return;
-      const obs = new ResizeObserver((entries) => {
-        const entry = entries[0];
-        if (!entry?.contentRect) return;
-        const { width, height } = entry.contentRect;
-        setter(clampSize({ width, height }, minSize));
-      });
-      obs.observe(ref.current);
-      observers.push(obs);
-    };
-    register(pasteCardRef, setPasteSize, MIN_PASTE_SIZE);
-    register(imageCardRef, setImageSize, MIN_IMAGE_SIZE);
-    register(markdownCardRef, setMarkdownSize, MIN_MARKDOWN_SIZE);
-    register(tableCardRef, setTableSize, MIN_TABLE_SIZE);
-    return () => observers.forEach(o => o.disconnect());
-  }, [clampSize]);
 
   const handleRenderPdfPreview = useCallback(async () => {
     if (!uploadedFile) return;
@@ -1517,28 +1392,6 @@ export default function Home() {
     if (sel && sel.rangeCount > 0) sel.removeAllRanges();
   };
 
-  const draggingRef = useRef<{ key: string; startX: number; startY: number; originX: number; originY: number } | null>(null);
-  const startDragging = (key: string, pos: { x: number; y: number }, setter: (p: { x: number; y: number }) => void) => (e: React.MouseEvent) => {
-    const target = e.target as HTMLElement;
-    if (target && target.closest('button, input, select, textarea, option')) return;
-    if (e.button !== 0) return;
-    e.preventDefault();
-    draggingRef.current = { key, startX: e.clientX, startY: e.clientY, originX: pos.x, originY: pos.y };
-    const onMove = (ev: MouseEvent) => {
-      if (!draggingRef.current) return;
-      const dx = ev.clientX - draggingRef.current.startX;
-      const dy = ev.clientY - draggingRef.current.startY;
-      setter({ x: Math.max(0, draggingRef.current.originX + dx), y: Math.max(0, draggingRef.current.originY + dy) });
-    };
-    const onUp = () => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-      draggingRef.current = null;
-    };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-  };
-
   const startSelection = (rowIdx: number, colIdx: number, event?: React.MouseEvent) => {
     clearNativeSelection();
     gridContainerRef.current?.focus();
@@ -1759,8 +1612,8 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen bg-background p-2">
-      <div className="mx-auto w-full space-y-2 relative" style={{ minHeight: `${Math.max(tablePos.y + tableSize.height + 160, 1400)}px` }}>
+    <div className="min-h-screen bg-background p-4">
+      <div className="mx-auto max-w-7xl space-y-4">
         <header className="text-center space-y-2">
           <h1 className="text-4xl font-bold">Data Extractor from Table</h1>
           <p className="text-muted-foreground">
@@ -1768,34 +1621,21 @@ export default function Home() {
           </p>
         </header>
 
-        <div
-          className="absolute"
-          style={{ left: pastePos.x, top: pastePos.y, width: pasteSize.width, height: pasteSize.height }}
-        >
-          <Card
-            ref={pasteCardRef}
-            style={{
-              resize: 'both',
-              overflow: 'auto',
-              minWidth: `${MIN_PASTE_SIZE.width}px`,
-              minHeight: `${MIN_PASTE_SIZE.height}px`,
-              width: '100%',
-              height: '100%'
-            }}
-          >
-          <CardHeader className="py-2 flex items-center justify-between cursor-move" onMouseDown={startDragging('paste', pastePos, setPastePos)}>
+        {/* Upload Panel */}
+        <Card>
+          <CardHeader className="py-2 flex items-center justify-between">
             <CardTitle className="text-base">Image / PDF Paste</CardTitle>
             <Button variant="ghost" size="sm" onClick={() => setShowUploadPanel(v => !v)}>
               {showUploadPanel ? 'Hide' : 'Show'}
             </Button>
           </CardHeader>
           {showUploadPanel ? (
-            <CardContent className="p-2">
+            <CardContent className="p-4">
               <div
                 ref={dropZoneRef}
                 onDragOver={handleDragOver}
                 onDrop={handleDrop}
-                className="border-2 border-dashed border-primary bg-primary/5 rounded-lg p-2 text-center text-primary hover:bg-primary/10 transition-colors cursor-pointer"
+                className="border-2 border-dashed border-primary bg-primary/5 rounded-lg p-4 text-center text-primary hover:bg-primary/10 transition-colors cursor-pointer"
                 onClick={() => fileInputRef.current?.click()}
               >
                 <Upload className="mx-auto h-8 w-12 mb-2" />
@@ -1825,60 +1665,33 @@ export default function Home() {
               Click to expand paste/upload area
             </div>
           )}
-          </Card>
-        </div>
+        </Card>
 
-        <div
-          className="absolute"
-          style={{ left: imagePos.x, top: imagePos.y, width: imageSize.width, height: imageSize.height }}
-        >
-          <Card
-            ref={imageCardRef}
-            style={{
-              resize: 'both',
-              overflow: 'auto',
-              minWidth: `${MIN_IMAGE_SIZE.width}px`,
-              minHeight: `${MIN_IMAGE_SIZE.height}px`,
-              width: '100%',
-              height: '100%'
-            }}
-          >
-            <CardHeader className="flex items-center justify-between cursor-move" onMouseDown={startDragging('image', imagePos, setImagePos)}>
-              <CardTitle className="flex items-center gap-2">
-                <FileText className="h-5 w-5" />
-                Image Table
-              </CardTitle>
-              <Button variant="ghost" size="sm" onClick={() => setShowImagePanel(v => !v)}>
-                {showImagePanel ? 'Hide' : 'Show'}
-              </Button>
-            </CardHeader>
+        {/* Image Panel */}
+        <Card>
+          <CardHeader className="flex items-center justify-between">
+            <CardTitle className="flex items-center gap-2">
+              <FileText className="h-5 w-5" />
+              Image Table
+            </CardTitle>
+            <Button variant="ghost" size="sm" onClick={() => setShowImagePanel(v => !v)}>
+              {showImagePanel ? 'Hide' : 'Show'}
+            </Button>
+          </CardHeader>
 
-            {showImagePanel ? (
+          {showImagePanel ? (
             <CardContent className="space-y-2">
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <span className="font-semibold">Zoom</span>
-                <input
-                  type="range"
-                  min={0.5}
-                  max={2}
-                  step={0.05}
-                  value={imageZoom}
-                  onChange={e => setImageZoom(parseFloat(e.target.value))}
-                />
-                <span className="w-12 text-right">{Math.round(imageZoom * 100)}%</span>
-              </div>
-              <div style={{ transform: `scale(${imageZoom})`, transformOrigin: 'top left' }}>
               {uploadedFile ? (
                 <div className="text-sm text-muted-foreground border rounded p-2 space-y-2 mb-3">
-                  <div>PDF selected: {uploadedFile.name}{pdfTotalPages ? ` ? ? ???: ${pdfTotalPages}` : ''}</div>
+                  <div>PDF selected: {uploadedFile.name}{pdfTotalPages ? ` (${pdfTotalPages} pages)` : ''}</div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                     <Input
-                      placeholder="??? ??? (?: 1-5,7,9)"
+                      placeholder="Include pages (e.g. 1-5,7,9)"
                       value={includePages}
                       onChange={(e) => setIncludePages(e.target.value)}
                     />
                     <Input
-                      placeholder="??? ??? (?: 2,6)"
+                      placeholder="Exclude pages (e.g. 2,6)"
                       value={excludePages}
                       onChange={(e) => setExcludePages(e.target.value)}
                     />
@@ -1886,17 +1699,17 @@ export default function Home() {
                   <div className="flex gap-2 items-center">
                     <Button size="sm" onClick={handleRenderPdfPreview} disabled={isRenderingPdf}>
                       {isRenderingPdf ? (
-                        <><Loader2 className="h-4 w-4 animate-spin" /> ???...</>
+                        <>Rendering...</>
                       ) : (
-                        '???? ??'
+                        'Render PDF'
                       )}
                     </Button>
                     {pdfPageImages.length > 0 ? (
-                      <span className="text-xs">???? {pdfPageImages.length}?</span>
+                      <span className="text-xs">Rendered {pdfPageImages.length} pages</span>
                     ) : null}
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    ??? ?? ????, ??? ???? ???? ?????.
+                    Specify pages to include/exclude before rendering.
                   </p>
                 </div>
               ) : null}
@@ -1926,7 +1739,7 @@ export default function Home() {
                 }
                 if (allPages.length === 0) return null;
                 return (
-                  <div className="grid grid-cols-1 gap-3 max-h-[520px] overflow-auto">
+                  <div className="grid grid-cols-1 gap-3 max-h-[500px] overflow-auto">
                     {allPages.map((p) => (
                       <div key={p.key} className="space-y-1">
                         <div className="text-xs text-muted-foreground">{p.label}</div>
@@ -1934,10 +1747,10 @@ export default function Home() {
                           <img src={p.url} alt={p.label} className="w-full h-auto rounded border" />
                           <button
                             type="button"
-                            aria-label={`${p.label} ??`}
+                            aria-label={`Remove ${p.label}`}
                             onClick={(e) => { e.stopPropagation(); p.onRemove(); }}
                             className="absolute top-1 right-1 inline-flex items-center justify-center rounded-full bg-black/70 hover:bg-black/85 text-white shadow p-1"
-                            title={`${p.label} ??`}
+                            title={`Remove ${p.label}`}
                           >
                             <X className="h-3.5 w-3.5" />
                           </button>
@@ -1947,132 +1760,76 @@ export default function Home() {
                   </div>
                 );
               })()}
-              </div>
             </CardContent>
-            ) : null}
-            {!showImagePanel ? (
-              <div className="px-4 pb-3 text-xs text-muted-foreground cursor-pointer" onClick={() => setShowImagePanel(true)}>
-                Click to expand image/PDF preview
-              </div>
-            ) : null}
-          </Card>
-        </div>
+          ) : null}
+          {!showImagePanel ? (
+            <div className="px-4 pb-3 text-xs text-muted-foreground cursor-pointer" onClick={() => setShowImagePanel(true)}>
+              Click to expand image/PDF preview
+            </div>
+          ) : null}
+        </Card>
 
-        <div
-          className="absolute"
-          style={{ left: markdownPos.x, top: markdownPos.y, width: markdownSize.width, height: markdownSize.height }}
-        >
-          <Card
-            ref={markdownCardRef}
-            style={{
-              resize: 'both',
-              overflow: 'auto',
-              minWidth: `${MIN_MARKDOWN_SIZE.width}px`,
-              minHeight: `${MIN_MARKDOWN_SIZE.height}px`,
-              width: '100%',
-              height: '100%'
-            }}
-          >
-            <CardHeader className="flex items-center justify-between cursor-move" onMouseDown={startDragging('markdown', markdownPos, setMarkdownPos)}>
-              <CardTitle>Markdown</CardTitle>
-              <div className="flex gap-2 flex-wrap items-center">
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <span className="font-semibold">Zoom</span>
-                  <input
-                    type="range"
-                    min={0.5}
-                    max={2}
-                    step={0.05}
-                    value={markdownZoom}
-                    onChange={(e) => setMarkdownZoom(parseFloat(e.target.value))}
-                  />
-                  <span className="w-12 text-right">{Math.round(markdownZoom * 100)}%</span>
-                </div>
-                <Button
-                  onClick={handleConvert}
-                  disabled={(imageDataUrls.length === 0 && !dataUrl && !uploadedFile) || isConverting}
-                  className="flex items-center gap-2"
-                >
-                  {isConverting ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : null}
-                  Convert (Image/PDF to MD)
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={handleCopy}
-                  disabled={!markdown.trim()}
-                  className="flex items-center gap-2"
-                >
-                  <Copy className="h-4 w-4" />
-                  {copySuccess ? 'Copied!' : 'Copy'}
-                </Button>
+        {/* Markdown Panel */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Markdown</CardTitle>
+            <div className="flex gap-2 flex-wrap items-center mt-2">
+              <Button
+                onClick={handleConvert}
+                disabled={(imageDataUrls.length === 0 && !dataUrl && !uploadedFile) || isConverting}
+                className="flex items-center gap-2"
+              >
+                {isConverting ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : null}
+                Convert (Image/PDF to MD)
+              </Button>
+              <Button
+                variant="outline"
+                onClick={handleCopy}
+                disabled={!markdown.trim()}
+                className="flex items-center gap-2"
+              >
+                <Copy className="h-4 w-4" />
+                {copySuccess ? 'Copied!' : 'Copy'}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={handleDownload}
+                disabled={!cases[selectedCase]}
+                className="flex items-center gap-2"
+              >
+                <Download className="h-4 w-4" />
+                Download CSV
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setShowMarkdownPanel(v => !v)}>
+                {showMarkdownPanel ? 'Hide' : 'Show'}
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className={showMarkdownPanel ? undefined : 'hidden'}>
+            <Textarea
+              value={markdown}
+              onChange={(e) => setMarkdown(e.target.value)}
+              placeholder="Markdown will appear here..."
+              className="h-[400px] overflow-auto resize-y field-sizing-fixed font-mono"
+            />
+          </CardContent>
+          {!showMarkdownPanel ? (
+            <div className="px-4 pb-3 text-xs text-muted-foreground cursor-pointer" onClick={() => setShowMarkdownPanel(true)}>
+              Click to expand markdown
+            </div>
+          ) : null}
+        </Card>
 
-                <Button
-                  variant="outline"
-                  onClick={handleDownload}
-                  disabled={!cases[selectedCase]}
-                  className="flex items-center gap-2"
-                >
-                  <Download className="h-4 w-4" />
-                  Download CSV
-                </Button>
-                <Button variant="ghost" size="sm" onClick={() => setShowMarkdownPanel(v => !v)}>
-                  {showMarkdownPanel ? 'Hide' : 'Show'}
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent className={showMarkdownPanel ? undefined : 'hidden'}>
-              <div style={{ transform: `scale(${markdownZoom})`, transformOrigin: 'top left' }}>
-                <Textarea
-                  value={markdown}
-                  onChange={(e) => setMarkdown(e.target.value)}
-                  placeholder="Markdown will appear here..."
-                  className="h-[400px] overflow-auto resize-y field-sizing-fixed font-mono"
-                />
-              </div>
-            </CardContent>
-            {!showMarkdownPanel ? (
-              <div className="px-4 pb-3 text-xs text-muted-foreground cursor-pointer" onClick={() => setShowMarkdownPanel(true)}>
-                Click to expand markdown
-              </div>
-            ) : null}
-          </Card>
-        </div>
-
-        <div
-          className="absolute"
-          style={{ left: tablePos.x, top: tablePos.y, width: tableSize.width, height: tableSize.height }}
-        >
-          <Card
-            ref={tableCardRef}
-            style={{
-              resize: 'both',
-              overflow: 'auto',
-              minWidth: `${MIN_TABLE_SIZE.width}px`,
-              minHeight: `${MIN_TABLE_SIZE.height}px`,
-              width: '100%',
-              height: '100%'
-            }}
-          >
-          <CardHeader className="cursor-move" onMouseDown={startDragging('table', tablePos, setTablePos)}>
+        {/* Table Panel */}
+        <Card>
+          <CardHeader>
             <CardTitle>
               Technical Evaluation Sheet
             </CardTitle>
             <div className="flex flex-wrap gap-2 mt-4">
               <div className="flex gap-2 flex-wrap items-center">
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <span className="font-semibold">Zoom</span>
-                  <input
-                    type="range"
-                    min={0.5}
-                    max={1.6}
-                    step={0.05}
-                    value={tableZoom}
-                    onChange={(e) => setTableZoom(parseFloat(e.target.value))}
-                  />
-                  <span className="w-12 text-right">{Math.round(tableZoom * 100)}%</span>
-                </div>
                 <select
                   id="case-select"
                   value={selectedCase}
@@ -2093,7 +1850,7 @@ export default function Home() {
                   onClick={() => excelInputRef.current?.click()}
                   disabled={isImportingExcel}
                   className="flex items-center gap-2"
-                  title="엑셀 파일을 불러오기"
+                  title="Load Excel file"
                 >
                   {isImportingExcel ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileSpreadsheet className="h-4 w-4" />}
                   Load Excel
@@ -2106,7 +1863,7 @@ export default function Home() {
                   onChange={(e) => handleExcelFileInput(e.target.files?.[0] || null)}
                 />
                 <Button variant="outline" onClick={() => setIsHorizontalView(prev => !prev)}>
-                  Tilting ({isHorizontalView ? 'Vertical' : 'Horizontal'})
+                  View ({isHorizontalView ? 'Vertical' : 'Horizontal'})
                 </Button>
               </div>
               <Button
@@ -2117,7 +1874,7 @@ export default function Home() {
                 {isExtracting ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : null}
-                Convert (MD to Case) 
+                Convert (MD to Case)
               </Button>
               <Button variant="outline" onClick={handleCopyExcelTable}>
                 <Copy className="h-4 w-4" />
@@ -2137,7 +1894,7 @@ export default function Home() {
             >
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="text-sm text-muted-foreground">
-                  Excel 테이블을 드롭하거나 업로드하면 Technical Evaluation Sheet에 그대로 채웁니다. 첫 열은 Field, 첫 행은 Case 이름으로 사용됩니다. CSV는 한글이 깨지면 EUC-KR/CP949까지 자동으로 시도합니다.
+                  Drop or upload Excel file to populate the Technical Evaluation Sheet. First column is Field, first row is Case name. CSV supports auto-detection of EUC-KR/CP949 encoding.
                 </div>
                 <div className="flex items-center gap-2">
                   <Button
@@ -2153,7 +1910,7 @@ export default function Home() {
                 </div>
               </div>
               <p className="mt-1 text-xs text-muted-foreground">
-                표를 찾을 수 없을 때는 첫 행/열에 값이 있는지 확인해주세요. 동일한 필드명이 여러 번 나오면 자동으로 번호를 붙입니다.
+                If table not found, check if first row/column has values. Duplicate field names get numbered automatically.
               </p>
             </div>
             <div
@@ -2161,7 +1918,6 @@ export default function Home() {
               tabIndex={0}
               onKeyDown={handleGridKeyDown}
               className="rounded-md border border-gray-300 shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/40 bg-white overflow-hidden"
-              style={{ transform: `scale(${tableZoom})`, transformOrigin: 'top left' }}
             >
               {isHorizontalView ? (
                 <div className="overflow-auto">
@@ -2180,86 +1936,86 @@ export default function Home() {
                             <div className="flex items-center justify-between gap-2">
                               {editingFieldIndex === idx ? (
                                 <input
-                                type="text"
-                                value={editingFieldName}
-                                autoFocus
-                                onChange={handleFieldNameChange}
-                                onBlur={handleFieldNameBlur}
-                                onKeyDown={handleFieldNameKeyDown}
-                                className="w-full px-1 py-0.5 border rounded text-sm"
-                                title={`Edit field name`}
-                                aria-label={`Edit field name`}
-                              />
-                            ) : (
-                              <span className="cursor-pointer truncate" title={field} onClick={() => handleFieldNameClick(idx)}>{field}</span>
-                            )}
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={(e) => { e.stopPropagation(); handleRemoveField(idx); }}
-                              title="Remove field"
-                              aria-label="Remove field"
-                            >
-                              <X className="h-4 w-4" />
-                            </Button>
-                          </div>
-                        </TableHead>
-                      ))}
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                {caseOptions.map((caseName) => {
-                  const isActiveCase = selectedCase === caseName;
-                  return (
-                    <TableRow key={`horizontal-${caseName}`} className={`odd:bg-white even:bg-gray-50 hover:bg-blue-50/40 transition-colors ${isActiveCase ? 'bg-primary/5' : ''}`}>
-                          <TableCell
-                            className="font-semibold text-left border-r border-gray-200 px-2 py-1 uppercase tracking-wide cursor-pointer"
-                            onClick={() => { if (selectedCase !== caseName) setSelectedCase(caseName); }}
-                          >
-                            {caseName}
-                          </TableCell>
-                        {fields.map((field, idx) => {
-                          const value = cases[caseName]?.[field] || '';
-                          const isChanged = changedFields[caseName]?.has(field);
-                          const isEditing = editingCell && editingCell.caseName === caseName && editingCell.field === field;
-                          const isSelected = isCellSelected(idx, caseOptions.indexOf(caseName) + 1);
-                          return (
+                                  type="text"
+                                  value={editingFieldName}
+                                  autoFocus
+                                  onChange={handleFieldNameChange}
+                                  onBlur={handleFieldNameBlur}
+                                  onKeyDown={handleFieldNameKeyDown}
+                                  className="w-full px-1 py-0.5 border rounded text-sm"
+                                  title={`Edit field name`}
+                                  aria-label={`Edit field name`}
+                                />
+                              ) : (
+                                <span className="cursor-pointer truncate" title={field} onClick={() => handleFieldNameClick(idx)}>{field}</span>
+                              )}
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={(e) => { e.stopPropagation(); handleRemoveField(idx); }}
+                                title="Remove field"
+                                aria-label="Remove field"
+                              >
+                                <X className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </TableHead>
+                        ))}
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {caseOptions.map((caseName) => {
+                        const isActiveCase = selectedCase === caseName;
+                        return (
+                          <TableRow key={`horizontal-${caseName}`} className={`odd:bg-white even:bg-gray-50 hover:bg-blue-50/40 transition-colors ${isActiveCase ? 'bg-primary/5' : ''}`}>
                             <TableCell
-                              key={`${caseName}-${field}`}
-                              className={`text-left cursor-pointer border-gray-200 px-2 py-1 text-sm min-w-[160px] whitespace-pre-wrap break-words ${idx < fields.length - 1 ? ' border-r' : ''} ${isChanged ? 'bg-yellow-50' : ''} ${isSelected ? 'ring-2 ring-primary/60 bg-primary/10' : ''}`}
-                              onMouseDown={(e) => { if (isEditing) return; e.preventDefault(); startSelection(idx, caseOptions.indexOf(caseName) + 1, e); }}
-                              onMouseEnter={() => extendSelection(idx, caseOptions.indexOf(caseName) + 1)}
-                              onClick={() => {
-                                if (hasDraggedSelectionRef.current) {
-                                  hasDraggedSelectionRef.current = false;
-                                  return;
-                                }
-                                // Single click keeps selection; double click edits
-                              }}
-                              onDoubleClick={() => handleCellClick(caseName, field)}
+                              className="font-semibold text-left border-r border-gray-200 px-2 py-1 uppercase tracking-wide cursor-pointer"
+                              onClick={() => { if (selectedCase !== caseName) setSelectedCase(caseName); }}
                             >
-                              {isEditing ? (
-                                  <input
-                                    type="text"
-                                    value={editingValue}
-                                    autoFocus
-                                    onChange={handleCellChange}
-                                    onBlur={handleCellBlur}
-                                    onKeyDown={handleCellKeyDown}
-                                    className="w-full px-1 py-0.5 border rounded text-sm"
-                                    title={`Edit ${field} for ${caseName}`}
-                                    aria-label={`Edit ${field} for ${caseName}`}
-                                  />
-                                ) : (
-                                  <span className="block truncate" title={value}>{value}</span>
-                                )}
-                              </TableCell>
-                            );
-                          })}
-                        </TableRow>
-                      );
-                    })}
-                  </TableBody>
+                              {caseName}
+                            </TableCell>
+                            {fields.map((field, idx) => {
+                              const value = cases[caseName]?.[field] || '';
+                              const isChanged = changedFields[caseName]?.has(field);
+                              const isEditing = editingCell && editingCell.caseName === caseName && editingCell.field === field;
+                              const isSelected = isCellSelected(idx, caseOptions.indexOf(caseName) + 1);
+                              return (
+                                <TableCell
+                                  key={`${caseName}-${field}`}
+                                  className={`text-left cursor-pointer border-gray-200 px-2 py-1 text-sm min-w-[160px] whitespace-pre-wrap break-words ${idx < fields.length - 1 ? ' border-r' : ''} ${isChanged ? 'bg-yellow-50' : ''} ${isSelected ? 'ring-2 ring-primary/60 bg-primary/10' : ''}`}
+                                  onMouseDown={(e) => { if (isEditing) return; e.preventDefault(); startSelection(idx, caseOptions.indexOf(caseName) + 1, e); }}
+                                  onMouseEnter={() => extendSelection(idx, caseOptions.indexOf(caseName) + 1)}
+                                  onClick={() => {
+                                    if (hasDraggedSelectionRef.current) {
+                                      hasDraggedSelectionRef.current = false;
+                                      return;
+                                    }
+                                    // Single click keeps selection; double click edits
+                                  }}
+                                  onDoubleClick={() => handleCellClick(caseName, field)}
+                                >
+                                  {isEditing ? (
+                                    <input
+                                      type="text"
+                                      value={editingValue}
+                                      autoFocus
+                                      onChange={handleCellChange}
+                                      onBlur={handleCellBlur}
+                                      onKeyDown={handleCellKeyDown}
+                                      className="w-full px-1 py-0.5 border rounded text-sm"
+                                      title={`Edit ${field} for ${caseName}`}
+                                      aria-label={`Edit ${field} for ${caseName}`}
+                                    />
+                                  ) : (
+                                    <span className="block truncate" title={value}>{value}</span>
+                                  )}
+                                </TableCell>
+                              );
+                            })}
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
                   </Table>
                 </div>
               ) : (
@@ -2359,15 +2115,15 @@ export default function Home() {
                                 style={cellStyle}
                                 onMouseDown={(e) => { if (isEditing) return; e.preventDefault(); startSelection(rowIdx, idx + 1, e); }}
                                 onMouseEnter={() => extendSelection(rowIdx, idx + 1)}
-                              onClick={() => {
-                                if (hasDraggedSelectionRef.current) {
-                                  hasDraggedSelectionRef.current = false;
-                                  return;
-                                }
-                                // Single click keeps selection; double click edits
-                              }}
-                              onDoubleClick={() => handleCellClick(c, field)}
-                            >
+                                onClick={() => {
+                                  if (hasDraggedSelectionRef.current) {
+                                    hasDraggedSelectionRef.current = false;
+                                    return;
+                                  }
+                                  // Single click keeps selection; double click edits
+                                }}
+                                onDoubleClick={() => handleCellClick(c, field)}
+                              >
                                 {isEditing ? (
                                   <input
                                     type="text"
@@ -2396,7 +2152,6 @@ export default function Home() {
           </CardContent>
         </Card>
       </div>
-        </div>
     </div>
   );
 }
