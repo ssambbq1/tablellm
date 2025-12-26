@@ -1613,7 +1613,7 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-background p-4">
-      <div className="mx-auto max-w-7xl space-y-4">
+      <div className="mx-auto w-full h-fit resize overflow-hidden border rounded-lg p-4 space-y-4 bg-white">
         <header className="text-center space-y-2">
           <h1 className="text-4xl font-bold">Data Extractor from Table</h1>
           <p className="text-muted-foreground">
@@ -1667,8 +1667,9 @@ export default function Home() {
           )}
         </Card>
 
+        <div className="flex space-x-4">
         {/* Image Panel */}
-        <Card>
+        <Card className="flex-1">
           <CardHeader className="flex items-center justify-between">
             <CardTitle className="flex items-center gap-2">
               <FileText className="h-5 w-5" />
@@ -1680,7 +1681,7 @@ export default function Home() {
           </CardHeader>
 
           {showImagePanel ? (
-            <CardContent className="space-y-2">
+            <CardContent className="space-y-2 h-[400px] overflow-auto resize-y">
               {uploadedFile ? (
                 <div className="text-sm text-muted-foreground border rounded p-2 space-y-2 mb-3">
                   <div>PDF selected: {uploadedFile.name}{pdfTotalPages ? ` (${pdfTotalPages} pages)` : ''}</div>
@@ -1770,7 +1771,7 @@ export default function Home() {
         </Card>
 
         {/* Markdown Panel */}
-        <Card>
+        <Card className="flex-1">
           <CardHeader>
             <CardTitle>Markdown</CardTitle>
             <div className="flex gap-2 flex-wrap items-center mt-2">
@@ -1821,6 +1822,8 @@ export default function Home() {
             </div>
           ) : null}
         </Card>
+
+        </div>
 
         {/* Table Panel */}
         <Card>
@@ -1886,7 +1889,7 @@ export default function Home() {
               </Button>
             </div>
           </CardHeader>
-          <CardContent>
+          <CardContent className="h-[400px] overflow-auto resize-y">
             <div
               onDragOver={(e) => e.preventDefault()}
               onDrop={handleExcelDrop}
